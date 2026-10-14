@@ -43,11 +43,13 @@ def init_db():
         )
     """)
     
+    # تحديث الجدول ليشمل حقل المشاهدات (views)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id INTEGER,
             video_url TEXT UNIQUE,
+            views INTEGER DEFAULT 0,
             submission_month TEXT,
             created_at TEXT
         )
@@ -61,11 +63,12 @@ init_db()
 class Form(StatesGroup):
     waiting_for_game_id = State()
     waiting_for_video_url = State()
+    waiting_for_views = State() # حالة جديدة بانتظار إدخال المشاهدات
 
 # ================= أمر البداية /start =================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()  # مسح أي حالة عالقة فوراً
+    await state.clear()
     telegram_id = message.from_user.id
     
     conn = sqlite3.connect("creators_bot.db")
@@ -108,7 +111,7 @@ async def process_game_id(message: types.Message, state: FSMContext):
 # ================= زر إرسال مقطع جديد =================
 @dp.message(F.text == "📤 إرسال مقطع جديد")
 async def start_submission(message: types.Message, state: FSMContext):
-    await state.clear()  # مسح أي حالة سابقة لتجنب التعليق
+    await state.clear()
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     
@@ -128,12 +131,11 @@ async def start_submission(message: types.Message, state: FSMContext):
     await message.answer(f"يرجى إرسال رابط المقطع الآن (TikTok / YouTube / Instagram).\nالمتبقي لك هذا الشهر: {MAX_VIDEOS_PER_MONTH - count} مقاطع.")
     await state.set_state(Form.waiting_for_video_url)
 
-# ================= استقبال واستحواذ رابط الفيديو =================
+# ================= استقبال رابط الفيديو ثم طلب المشاهدات =================
 URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com)/.+)"
 
 @dp.message(Form.waiting_for_video_url)
 async def process_video_url(message: types.Message, state: FSMContext):
-    telegram_id = message.from_user.id
     text = message.text.strip()
     
     if not re.match(URL_PATTERN, text):
@@ -145,6 +147,24 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await message.answer("⏳ عذراً، تم إغلاق استقبال المقاطع لهذا الشهر (يتم الإغلاق يوم 28).")
         return
 
+    # حفظ الرابط مؤقتاً في الذاكرة والانتقال لطلب المشاهدات
+    await state.update_data(video_url=text)
+    await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالية للمقطع (أرقام فقط، مثال: 1500):")
+    await state.set_state(Form.waiting_for_views)
+
+# ================= استقبال عدد المشاهدات وحفظ المقطع نهائياً =================
+@dp.message(Form.waiting_for_views)
+async def process_video_views(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    
+    if not text.isdigit():
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات (مثال: 500):")
+        return
+
+    views = int(text)
+    data = await state.get_data()
+    video_url = data.get("video_url")
+    telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -152,14 +172,15 @@ async def process_video_url(message: types.Message, state: FSMContext):
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO submissions (telegram_id, video_url, submission_month, created_at) VALUES (?, ?, ?, ?)",
-            (telegram_id, text, current_month, now)
+            "INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (?, ?, ?, ?, ?)",
+            (telegram_id, video_url, views, current_month, now)
         )
         conn.commit()
-        await message.answer("🎉 تم تسجيل وتوثيق مقطعك بنجاح!", reply_markup=main_keyboard)
+        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views}) بنجاح!", reply_markup=main_keyboard)
         await state.clear()
     except sqlite3.IntegrityError:
-        await message.answer("⚠️ هذا الرابط تم تسجيله مسبقاً في النظام!")
+        await message.answer("⚠️ هذا الرابط تم تسجيله مسبقاً في النظام!", reply_markup=main_keyboard)
+        await state.clear()
     finally:
         conn.close()
 
@@ -173,7 +194,7 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     conn = sqlite3.connect("creators_bot.db")
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT video_url, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?",
+        "SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?",
         (telegram_id, current_month)
     )
     rows = cursor.fetchall()
@@ -185,7 +206,7 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
 
     res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
     for idx, row in enumerate(rows, 1):
-        res += f"{idx}. {row[0]}\n🗓 {row[1]}\n\n"
+        res += f"{idx}. {row[0]}\n👁 المشاهدات: **{row[1]}**\n🗓 {row[2]}\n\n"
     
     await message.answer(res, disable_web_page_preview=True, parse_mode="Markdown", reply_markup=main_keyboard)
 
