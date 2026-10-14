@@ -12,9 +12,9 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # ================= إعدادات البوت =================
 TOKEN = "8502001864:AAG9DfNx1s_U3tSpMXaUVsTF2WGAhIklLjk"  # التوكن الخاص بك
-ADMIN_ID = 0  # استبدلها بمعرف التيليجرام الخاص بك إن أردت، أو اتركها حالياً
+ADMIN_ID = 0  # استبدلها بمعرف التيليجرام الخاص بك إن أردت
 
-MAX_VIDEOS_PER_MONTH = 5      # الحد الأقص للمقاطع المسموح بها لكل صانع شهرياً
+MAX_VIDEOS_PER_MONTH = 5      # الحد الأقصى للمقاطع المسموح بها لكل صانع شهرياً
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -65,6 +65,7 @@ class Form(StatesGroup):
 # ================= أمر البداية /start =================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()  # مسح أي حالة عالقة فوراً
     telegram_id = message.from_user.id
     
     conn = sqlite3.connect("creators_bot.db")
@@ -107,6 +108,7 @@ async def process_game_id(message: types.Message, state: FSMContext):
 # ================= زر إرسال مقطع جديد =================
 @dp.message(F.text == "📤 إرسال مقطع جديد")
 async def start_submission(message: types.Message, state: FSMContext):
+    await state.clear()  # مسح أي حالة سابقة لتجنب التعليق
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     
@@ -127,7 +129,6 @@ async def start_submission(message: types.Message, state: FSMContext):
     await state.set_state(Form.waiting_for_video_url)
 
 # ================= استقبال واستحواذ رابط الفيديو =================
-# نمط التحقق المحدث ليشمل روابط تيك توك القصيرة وجميع روابط إنستغرام ويوتيوب
 URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com)/.+)"
 
 @dp.message(Form.waiting_for_video_url)
@@ -164,7 +165,8 @@ async def process_video_url(message: types.Message, state: FSMContext):
 
 # ================= استعراض المقاطع والبيانات الشخصية =================
 @dp.message(F.text == "📊 مقاطعي هذا الشهر")
-async def show_my_submissions(message: types.Message):
+async def show_my_submissions(message: types.Message, state: FSMContext):
+    await state.clear()
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     
@@ -178,17 +180,18 @@ async def show_my_submissions(message: types.Message):
     conn.close()
     
     if not rows:
-        await message.answer("لم تقم بإرسال أي مقاطع هذا الشهر حتى الآن.")
+        await message.answer("لم تقم بإرسال أي مقاطع هذا الشهر حتى الآن.", reply_markup=main_keyboard)
         return
 
     res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
     for idx, row in enumerate(rows, 1):
         res += f"{idx}. {row[0]}\n🗓 {row[1]}\n\n"
     
-    await message.answer(res, disable_web_page_preview=True, parse_mode="Markdown")
+    await message.answer(res, disable_web_page_preview=True, parse_mode="Markdown", reply_markup=main_keyboard)
 
 @dp.message(F.text == "👤 حسابي المعرّف")
-async def show_my_account(message: types.Message):
+async def show_my_account(message: types.Message, state: FSMContext):
+    await state.clear()
     telegram_id = message.from_user.id
     conn = sqlite3.connect("creators_bot.db")
     cursor = conn.cursor()
@@ -197,9 +200,11 @@ async def show_my_account(message: types.Message):
     conn.close()
     
     if user:
-        await message.answer(f"معرّف اللعبة المسجل بحسابك هو: `{user[0]}`", parse_mode="Markdown")
+        await message.answer(f"معرّف اللعبة المسجل بحسابك هو: `{user[0]}`", parse_mode="Markdown", reply_markup=main_keyboard)
     else:
-        await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.")
+        await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
 
-# ================= إحصائيات الأدمن =================
-@
+# ================= تشغيل البوت =================
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(dp.start_polling(bot))
