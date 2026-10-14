@@ -12,7 +12,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # ================= إعدادات البوت =================
 TOKEN = "8502001864:AAG9DfNx1s_U3tSpMXaUVsTF2WGAhIklLjk"  # التوكن الخاص بك
-ADMIN_ID = 0  # استبدلها بمعرف التيليجرام الخاص بك إن أردت
+ADMIN_GROUP_ID = 0  # ⚠️ ضع هنا رقم معرف مجموعة المشرفين (بعد الحصول عليه عبر أمر /myid)
 
 MAX_VIDEOS_PER_MONTH = 5      # الحد الأقصى للمقاطع المسموح بها لكل صانع شهرياً
 
@@ -64,6 +64,19 @@ class Form(StatesGroup):
     waiting_for_game_id = State()
     waiting_for_video_url = State()
     waiting_for_views = State()
+
+# ================= أمر معرف المجموعة السحري /myid =================
+@dp.message(Command("myid"))
+async def get_group_id(message: types.Message):
+    chat_id = message.chat.id
+    chat_title = message.chat.title or "خاص"
+    await message.answer(
+        f"📌 **معلومات المحادثة الحالية:**\n\n"
+        f"🏷 اسم المحادثة: {chat_title}\n"
+        f"🆔 معرف المحادثة (Chat ID): `{chat_id}`\n\n"
+        f"انسخ هذا الرقم وضعه في متغير `ADMIN_GROUP_ID` في الكود لديك.",
+        parse_mode="Markdown"
+    )
 
 # ================= أمر البداية /start =================
 @dp.message(Command("start"))
@@ -120,7 +133,6 @@ async def start_submission(message: types.Message, state: FSMContext):
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    # التحقق من عدد مقاطع الشهر الحالي فقط
     cursor.execute(
         "SELECT COUNT(*) FROM submissions WHERE telegram_id = ? AND submission_month = ?",
         (telegram_id, current_month)
@@ -155,7 +167,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
     await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالية للمقطع (أرقام فقط، مثال: 1500):")
     await state.set_state(Form.waiting_for_views)
 
-# ================= استقبال عدد المشاهدات وحفظ المقطع لشهر الحالي =================
+# ================= استقبال المشاهدات وإرسال التقرير للمشرفين =================
 @dp.message(Form.waiting_for_views)
 async def process_video_views(message: types.Message, state: FSMContext):
     text = message.text.strip()
@@ -174,21 +186,52 @@ async def process_video_views(message: types.Message, state: FSMContext):
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    
+    # جلب معرف اللعبة الخاص بالصانع
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+    user_row = cursor.fetchone()
+    game_id = user_row[0] if user_row else "غير معروف"
+    
     try:
         cursor.execute(
             "INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (?, ?, ?, ?, ?)",
             (telegram_id, video_url, views, current_month, now)
         )
         conn.commit()
-        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views}) لشهر {current_month} بنجاح!", reply_markup=main_keyboard)
+        
+        # حساب إجمالي مشاهدات اللاعب لهذا الشهر
+        cursor.execute(
+            "SELECT SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?",
+            (telegram_id, current_month)
+        )
+        total_user_views = cursor.fetchone()[0] or views
+        
+        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views:,}) لشهر {current_month} بنجاح!", reply_markup=main_keyboard)
         await state.clear()
+        
+        # إرسال إشعار تلقائي إلى مجموعة المشرفين
+        if ADMIN_GROUP_ID != 0:
+            admin_msg = (
+                f"📥 **مقطع جديد تم إرساله!**\n\n"
+                f"🎮 معرّف اللاعب: `{game_id}`\n"
+                f"🆔 معرف التيليجرام: `{telegram_id}`\n"
+                f"🔗 الرابط: {video_url}\n"
+                f"👁 مشاهدات المقطع: **{views:,}**\n"
+                f"📊 إجمالي مشاهدات اللاعب هذا الشهر: **{total_user_views:,}**\n"
+                f"🗓 التاريخ: {now}"
+            )
+            try:
+                await bot.send_message(ADMIN_GROUP_ID, admin_msg, parse_mode="Markdown", disable_web_page_preview=True)
+            except Exception as e:
+                logging.error(f"Failed to send admin notification: {e}")
+
     except sqlite3.IntegrityError:
         await message.answer("⚠️ هذا الرابط تم تسجيله مسبقاً في النظام!", reply_markup=main_keyboard)
         await state.clear()
     finally:
         conn.close()
 
-# ================= استعراض مقاطع الشهر الحالي فقط =================
+# ================= استعراض المقاطع وإجمالي المشاهدات =================
 @dp.message(F.text == "📊 مقاطعي هذا الشهر")
 async def show_my_submissions(message: types.Message, state: FSMContext):
     await state.clear()
@@ -198,21 +241,28 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    # جلب مقاطع الشهر الحالي فقط لكي تبدأ الصفحة نظيفة مع كل شهر جديد
     cursor.execute(
         "SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?",
         (telegram_id, current_month)
     )
     rows = cursor.fetchall()
+    
+    cursor.execute(
+        "SELECT SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?",
+        (telegram_id, current_month)
+    )
+    total_views = cursor.fetchone()[0] or 0
     conn.close()
     
     if not rows:
-        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month} حتى الآن. تبدأ عداد 5 مقاطع جديدة هذا الشهر!", reply_markup=main_keyboard)
+        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month} حتى الآن.", reply_markup=main_keyboard)
         return
 
     res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
     for idx, row in enumerate(rows, 1):
-        res += f"{idx}. {row[0]}\n👁 المشاهدات: **{row[1]}**\n🗓 {row[2]}\n\n"
+        res += f"{idx}. {row[0]}\n👁 المشاهدات: **{row[1]:,}**\n🗓 {row[2]}\n\n"
+    
+    res += f"━━━━━━━━━━━━━━━━━━━\n📈 **إجمالي المشاهدات هذا الشهر: {total_views:,} مشاهدة**"
     
     await message.answer(res, disable_web_page_preview=True, parse_mode="Markdown", reply_markup=main_keyboard)
 
