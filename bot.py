@@ -2,7 +2,8 @@ import sqlite3
 import re
 import logging
 import os
-from datetime import datetime
+import asyncio
+from datetime import datetime, time
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -62,22 +63,78 @@ class Form(StatesGroup):
     waiting_for_video_url = State()
     waiting_for_views = State()
 
-# ================= أمر الإصلاح الذاتي وفك التعليق (/cancel) =================
+# ================= مهمة إرسال التقرير اليومي الساعة 11:59 PM =================
+async def daily_report_scheduler():
+    while True:
+        now = datetime.now()
+        # حساب الوقت المتبقي حتى الساعة 23:59 (11:59 PM)
+        target_time = now.replace(hour=23, minute=59, second=0, microsecond=0)
+        
+        if now >= target_time:
+            # إذا فات وقت اليوم، نضبط الموعد لليوم التالي
+            target_time = target_time.replace(day=target_time.day + 1)
+            
+        wait_seconds = (target_time - datetime.now()).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        
+        # تنفيذ إرسال التقرير عند حلول الساعة المطلوبة
+        if ADMIN_GROUP_ID != 0:
+            today_date = datetime.now().strftime("%Y-%m-%d")
+            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # جلب كل مقاطع اليوم مع معرفات اللاعبين ومشاهداتهم
+            cursor.execute("""
+                T1.game_id, T2.video_url, T2.views, T2.created_at 
+                FROM submissions T2 
+                LEFT JOIN users T1 ON T2.telegram_id = T1.telegram_id 
+                WHERE DATE(T2.created_at) = ?
+            """, (today_date,))
+            # جلب البيانات بطريقة سليمة
+            cursor.execute("""
+                SELECT u.game_id, s.video_url, s.views, s.created_at 
+                FROM submissions s 
+                LEFT JOIN users u ON s.telegram_id = u.telegram_id 
+                WHERE DATE(s.created_at) = ?
+            """, (today_date,))
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if rows:
+                report_text = f"📊 **التقرير اليومي الشامل للمقاطع المسجلة ({today_date}):**\n\n"
+                for idx, row in enumerate(rows, 1):
+                    g_id = row[0] or "غير معروف"
+                    v_url = row[1]
+                    v_views = row[2]
+                    v_time = row[3]
+                    report_text += f"{idx}. 🎮 Game ID: `{g_id}`\n   🔗 الرابط: {v_url}\n   👁 المشاهدات: **{v_views:,}**\n   🗓 الوقت: {v_time}\n\n"
+                
+                try:
+                    await bot.send_message(ADMIN_GROUP_ID, report_text, parse_mode="Markdown", disable_web_page_preview=True)
+                except Exception as e:
+                    logging.error(f"Failed to send daily report: {e}")
+            else:
+                try:
+                    await bot.send_message(ADMIN_GROUP_ID, f"📊 **التقرير اليومي ({today_date}):**\nلم يتم تسجيل أي مقاطع جديدة اليوم.", parse_mode="Markdown")
+                except Exception as e:
+                    logging.error(f"Failed to send empty daily report: {e}")
+        
+        # الانتظار قليلاً لكي يتجاوز الدقيقة الحالية ولا يتكرر فوراً
+        await asyncio.sleep(60)
+
+# ================= الأوامر والإصلاح الذاتي =================
 @dp.message(Command("cancel", "reset", "fix"))
 async def cancel_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "🔄 **تم إلغاء أي عملية سابقة وفك التعليق بنجاح!**\nالبوت يعمل الآن بشكل طبيعي. اختر ما تحتاجه من القائمة:",
-        reply_markup=main_keyboard,
-        parse_mode="Markdown"
-    )
+    await message.answer("🔄 **تم فك التعليق بنجاح!** البوت جاهز للاستخدام.", reply_markup=main_keyboard, parse_mode="Markdown")
 
 @dp.message(Command("myid"))
 async def get_group_id(message: types.Message, state: FSMContext):
     await state.clear()
     chat_id = message.chat.id
     chat_title = message.chat.title or "خاص"
-    await message.answer(f"🆔 معرف المحادثة (Chat ID): `{chat_id}` (اسم المحادثة: {chat_title})", parse_mode="Markdown")
+    await message.answer(f"🆔 معرف المحادثة (Chat ID): `{chat_id}`", parse_mode="Markdown")
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -92,13 +149,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
     conn.close()
     
     if user:
-        await message.answer(
-            f"أهلاً بك مجدداً! 🎬\nمعرّفك المسجل لدينا: `{user[0]}`\nاختر من القائمة أدناه:",
-            reply_markup=main_keyboard,
-            parse_mode="Markdown"
-        )
+        await message.answer(f"أهلاً بك مجدداً! 🎬\nمعرّفك المسجل: `{user[0]}`", reply_markup=main_keyboard, parse_mode="Markdown")
     else:
-        await message.answer("أهلاً بك في بوت برنامج صناع المحتوى! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:")
+        await message.answer("أهلاً بك في بوت برنامج صناع المحتوى! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** للبدء:")
         await state.set_state(Form.waiting_for_game_id)
 
 @dp.message(Form.waiting_for_game_id)
@@ -110,18 +163,16 @@ async def process_game_id(message: types.Message, state: FSMContext):
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)",
-                   (telegram_id, game_id, now))
+    cursor.execute("INSERT OR REPLACE INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)", (telegram_id, game_id, now))
     conn.commit()
     conn.close()
     
     await state.clear()
-    await message.answer(f"✅ تم ربط حسابك بنجاح بمعرّف اللعبة: `{game_id}`", reply_markup=main_keyboard, parse_mode="Markdown")
+    await message.answer(f"✅ تم ربط حسابك بمعرّف اللعبة: `{game_id}`", reply_markup=main_keyboard, parse_mode="Markdown")
 
-# ================= أزرار القائمة مع تنظيف الحالات لمنع التعليق =================
 @dp.message(F.text == "📤 إرسال مقطع جديد")
 async def start_submission(message: types.Message, state: FSMContext):
-    await state.clear() # فك أي تعليق فور الضغط على الزر
+    await state.clear()
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     
@@ -133,10 +184,10 @@ async def start_submission(message: types.Message, state: FSMContext):
     conn.close()
     
     if count >= MAX_VIDEOS_PER_MONTH:
-        await message.answer(f"⚠️ وصلت للحد الأقصى المسموح به لهذا الشهر وهو ({MAX_VIDEOS_PER_MONTH}) مقاطع.", reply_markup=main_keyboard)
+        await message.answer(f"⚠️ وصلت للحد الأقصى لهذا الشهر ({MAX_VIDEOS_PER_MONTH} مقاطع).", reply_markup=main_keyboard)
         return
 
-    await message.answer(f"يرجى إرسال رابط المقطع الآن (TikTok / YouTube / Instagram).\nالمتبقي لك هذا الشهر: {MAX_VIDEOS_PER_MONTH - count} مقاطع.")
+    await message.answer(f"يرجى إرسال رابط المقطع (TikTok / YouTube / Instagram).\nالمتبقي لك هذا الشهر: {MAX_VIDEOS_PER_MONTH - count} مقاطع.")
     await state.set_state(Form.waiting_for_video_url)
 
 URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com)/.+)"
@@ -144,9 +195,8 @@ URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|
 @dp.message(Form.waiting_for_video_url)
 async def process_video_url(message: types.Message, state: FSMContext):
     text = message.text.strip()
-    
     if not re.match(URL_PATTERN, text):
-        await message.answer("❌ الرابط غير صالح! أرسل رابط صحيح من (TikTok, YouTube, Instagram) أو أرسل /cancel إلغاء.")
+        await message.answer("❌ الرابط غير صالح! أرسل رابط صحيح أو /cancel للإلغاء.")
         return
 
     if datetime.now().day > 28:
@@ -161,9 +211,8 @@ async def process_video_url(message: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_views)
 async def process_video_views(message: types.Message, state: FSMContext):
     text = message.text.strip()
-    
     if not text.isdigit():
-        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات أو أرسل /cancel للإلغاء:")
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط للمشاهدات أو /cancel للإلغاء:")
         return
 
     views = int(text)
@@ -177,38 +226,14 @@ async def process_video_views(message: types.Message, state: FSMContext):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
-    user_row = cursor.fetchone()
-    game_id = user_row[0] if user_row else "غير معروف"
-    
     try:
         cursor.execute(
             "INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (?, ?, ?, ?, ?)",
             (telegram_id, video_url, views, current_month, now)
         )
         conn.commit()
-        
-        cursor.execute("SELECT SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-        total_user_views = cursor.fetchone()[0] or views
-        
-        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views:,}) لشهر {current_month} بنجاح!", reply_markup=main_keyboard)
+        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views:,}) بنجاح! سيتم إدراجه في التقرير اليومي للمشرفين.", reply_markup=main_keyboard)
         await state.clear()
-        
-        if ADMIN_GROUP_ID != 0:
-            admin_msg = (
-                f"📥 **مقطع جديد تم إرساله!**\n\n"
-                f"🎮 معرّف اللاعب: `{game_id}`\n"
-                f"🆔 معرف التيليجرام: `{telegram_id}`\n"
-                f"🔗 الرابط: {video_url}\n"
-                f"👁 مشاهدات المقطع: **{views:,}**\n"
-                f"📊 إجمالي مشاهدات اللاعب هذا الشهر: **{total_user_views:,}**\n"
-                f"🗓 التاريخ: {now}"
-            )
-            try:
-                await bot.send_message(ADMIN_GROUP_ID, admin_msg, parse_mode="Markdown", disable_web_page_preview=True)
-            except Exception as e:
-                logging.error(f"Failed to send admin notification: {e}")
-
     except sqlite3.IntegrityError:
         await message.answer("⚠️ هذا الرابط تم تسجيله مسبقاً في النظام!", reply_markup=main_keyboard)
         await state.clear()
@@ -217,7 +242,7 @@ async def process_video_views(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "📊 مقاطعي هذا الشهر")
 async def show_my_submissions(message: types.Message, state: FSMContext):
-    await state.clear() # فك التعليق
+    await state.clear()
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     
@@ -244,7 +269,7 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "👤 حسابي المعرّف")
 async def show_my_account(message: types.Message, state: FSMContext):
-    await state.clear() # فك التعليق
+    await state.clear()
     telegram_id = message.from_user.id
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
     conn = sqlite3.connect(db_path)
@@ -258,6 +283,12 @@ async def show_my_account(message: types.Message, state: FSMContext):
     else:
         await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
 
+# ================= تشغيل البوت مع المجدول اليومي =================
+async def main():
+    # تشغيل مهمة الجدولة اليومية بالتوازي مع استقبال رسائل البوت
+    asyncio.create_task(daily_report_scheduler())
+    await dp.start_polling(bot)
+
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(dp.start_polling(bot))
+    asyncio.run(main())
