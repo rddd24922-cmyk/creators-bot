@@ -14,7 +14,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 TOKEN = "8502001864:AAG9DfNx1s_U3tSpMXaUVsTF2WGAhIklLjk"  # التوكن الخاص بك
 ADMIN_ID = 0  # استبدلها بمعرف التيليجرام الخاص بك إن أردت، أو اتركها حالياً
 
-MAX_VIDEOS_PER_MONTH = 5      # الحد الأقصى للمقاطع المسموح بها لكل صانع شهرياً
+MAX_VIDEOS_PER_MONTH = 5      # الحد الأقص للمقاطع المسموح بها لكل صانع شهرياً
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -127,7 +127,8 @@ async def start_submission(message: types.Message, state: FSMContext):
     await state.set_state(Form.waiting_for_video_url)
 
 # ================= استقبال واستحواذ رابط الفيديو =================
-URL_PATTERN = r"(https?://(?:www\.)?(tiktok\.com|youtube\.com|youtu\.be|instagram\.com)/.+)"
+# نمط التحقق المحدث ليشمل روابط تيك توك القصيرة وجميع روابط إنستغرام ويوتيوب
+URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com)/.+)"
 
 @dp.message(Form.waiting_for_video_url)
 async def process_video_url(message: types.Message, state: FSMContext):
@@ -201,31 +202,4 @@ async def show_my_account(message: types.Message):
         await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.")
 
 # ================= إحصائيات الأدمن =================
-@dp.message(Command("stats"))
-async def admin_stats(message: types.Message):
-    if ADMIN_ID != 0 and message.from_user.id != ADMIN_ID:
-        return
-    
-    current_month = datetime.now().strftime("%Y-%m")
-    conn = sqlite3.connect("creators_bot.db")
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM submissions WHERE submission_month = ?", (current_month,))
-    total_videos = cursor.fetchone()[0]
-    
-    conn.close()
-    
-    await message.answer(
-        f"📈 **إحصائيات النظام:**\n\n"
-        f"👥 إجمالي صناع المحتوى المسجلين: {total_users}\n"
-        f"🎥 المقاطع المرفوعة هذا الشهر ({current_month}): {total_videos}",
-        parse_mode="Markdown"
-    )
-
-# ================= تشغيل البوت =================
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(dp.start_polling(bot))
+@
