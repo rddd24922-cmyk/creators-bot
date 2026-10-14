@@ -1,9 +1,10 @@
+
 import sqlite3
 import re
 import logging
 import os
 import asyncio
-from datetime import datetime, time
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -31,18 +32,21 @@ main_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ================= قاعدة البيانات =================
+# ================= قاعدة البيانات المحمية =================
 def init_db():
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    
+    # جدول المستخدمين: ربط حصري بين telegram_id و game_id
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             telegram_id INTEGER PRIMARY KEY,
-            game_id TEXT,
+            game_id TEXT UNIQUE,
             registered_at TEXT
         )
     """)
+    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,35 +67,24 @@ class Form(StatesGroup):
     waiting_for_video_url = State()
     waiting_for_views = State()
 
-# ================= مهمة إرسال التقرير اليومي الساعة 11:59 PM =================
+# ================= مهمة التقرير اليومي (11:59 PM) =================
 async def daily_report_scheduler():
     while True:
         now = datetime.now()
-        # حساب الوقت المتبقي حتى الساعة 23:59 (11:59 PM)
         target_time = now.replace(hour=23, minute=59, second=0, microsecond=0)
         
         if now >= target_time:
-            # إذا فات وقت اليوم، نضبط الموعد لليوم التالي
             target_time = target_time.replace(day=target_time.day + 1)
             
         wait_seconds = (target_time - datetime.now()).total_seconds()
         await asyncio.sleep(wait_seconds)
         
-        # تنفيذ إرسال التقرير عند حلول الساعة المطلوبة
         if ADMIN_GROUP_ID != 0:
             today_date = datetime.now().strftime("%Y-%m-%d")
             db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             
-            # جلب كل مقاطع اليوم مع معرفات اللاعبين ومشاهداتهم
-            cursor.execute("""
-                T1.game_id, T2.video_url, T2.views, T2.created_at 
-                FROM submissions T2 
-                LEFT JOIN users T1 ON T2.telegram_id = T1.telegram_id 
-                WHERE DATE(T2.created_at) = ?
-            """, (today_date,))
-            # جلب البيانات بطريقة سليمة
             cursor.execute("""
                 SELECT u.game_id, s.video_url, s.views, s.created_at 
                 FROM submissions s 
@@ -120,7 +113,6 @@ async def daily_report_scheduler():
                 except Exception as e:
                     logging.error(f"Failed to send empty daily report: {e}")
         
-        # الانتظار قليلاً لكي يتجاوز الدقيقة الحالية ولا يتكرر فوراً
         await asyncio.sleep(60)
 
 # ================= الأوامر والإصلاح الذاتي =================
@@ -149,11 +141,16 @@ async def cmd_start(message: types.Message, state: FSMContext):
     conn.close()
     
     if user:
-        await message.answer(f"أهلاً بك مجدداً! 🎬\nمعرّفك المسجل: `{user[0]}`", reply_markup=main_keyboard, parse_mode="Markdown")
+        await message.answer(
+            f"أهلاً بك مجدداً! 🎬\nمعرّفك المسجل بحسابك: `{user[0]}`\nاختر من القائمة أدناه:",
+            reply_markup=main_keyboard,
+            parse_mode="Markdown"
+        )
     else:
-        await message.answer("أهلاً بك في بوت برنامج صناع المحتوى! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** للبدء:")
+        await message.answer("أهلاً بك في بوت برنامج صناع المحتوى! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:")
         await state.set_state(Form.waiting_for_game_id)
 
+# ================= حماية ضد سرقة وتسجيل Game ID الخاص بالآخرين =================
 @dp.message(Form.waiting_for_game_id)
 async def process_game_id(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
@@ -163,22 +160,51 @@ async def process_game_id(message: types.Message, state: FSMContext):
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)", (telegram_id, game_id, now))
-    conn.commit()
-    conn.close()
     
-    await state.clear()
-    await message.answer(f"✅ تم ربط حسابك بمعرّف اللعبة: `{game_id}`", reply_markup=main_keyboard, parse_mode="Markdown")
+    try:
+        # محاولة حفظ الربط الحصري
+        cursor.execute(
+            "INSERT INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)",
+            (telegram_id, game_id, now)
+        )
+        conn.commit()
+        await state.clear()
+        await message.answer(f"✅ تم ربط حسابك حصرياً بمعرّف اللعبة: `{game_id}` بنجاح!", reply_markup=main_keyboard, parse_mode="Markdown")
+    except sqlite3.IntegrityError:
+        # إذا كان المعرّف مسجلاً مسبقاً بحساب تيليجرام آخر
+        cursor.execute("SELECT telegram_id FROM users WHERE game_id = ?", (game_id,))
+        owner = cursor.fetchone()
+        
+        if owner and owner[0] == telegram_id:
+            # إذا كان المستخدم الحالي هو نفسه المالك مسجلاً مسبقاً
+            await state.clear()
+            await message.answer(f"✅ أنت مسجل مسبقاً بهذا المعرّف: `{game_id}`", reply_markup=main_keyboard, parse_mode="Markdown")
+        else:
+            # محاولة تخريب من شخص آخر!
+            await message.answer("❌ **عذراً، هذا المعرّف (Game ID) مسجل مسبقاً بحساب صانع محتوى آخر ولا يمكن استخدامه!**\nإذا كان هذا معرّفك الحقيقي وحصل خطأ، تواصل مع المشرفين.", reply_markup=main_keyboard, parse_mode="Markdown")
+            await state.clear()
+    finally:
+        conn.close()
 
 @dp.message(F.text == "📤 إرسال مقطع جديد")
 async def start_submission(message: types.Message, state: FSMContext):
     await state.clear()
     telegram_id = message.from_user.id
-    current_month = datetime.now().strftime("%Y-%m")
     
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    
+    # التأكد أن المستخدم مسجل ولديه Game ID أصلاً
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+    user = cursor.fetchone()
+    
+    if not user:
+        conn.close()
+        await message.answer("⚠️ أنت غير مسجل في النظام! يرجى إرسال /start لتسجيل معرّف اللعبة الخاص بك أولاً.")
+        return
+
+    current_month = datetime.now().strftime("%Y-%m")
     cursor.execute("SELECT COUNT(*) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
     count = cursor.fetchone()[0]
     conn.close()
@@ -232,7 +258,7 @@ async def process_video_views(message: types.Message, state: FSMContext):
             (telegram_id, video_url, views, current_month, now)
         )
         conn.commit()
-        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views:,}) بنجاح! سيتم إدراجه في التقرير اليومي للمشرفين.", reply_markup=main_keyboard)
+        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views:,}) بنجاح! سيتم إدراجه في التقرير اليومي.", reply_markup=main_keyboard)
         await state.clear()
     except sqlite3.IntegrityError:
         await message.answer("⚠️ هذا الرابط تم تسجيله مسبقاً في النظام!", reply_markup=main_keyboard)
@@ -283,9 +309,7 @@ async def show_my_account(message: types.Message, state: FSMContext):
     else:
         await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
 
-# ================= تشغيل البوت مع المجدول اليومي =================
 async def main():
-    # تشغيل مهمة الجدولة اليومية بالتوازي مع استقبال رسائل البوت
     asyncio.create_task(daily_report_scheduler())
     await dp.start_polling(bot)
 
