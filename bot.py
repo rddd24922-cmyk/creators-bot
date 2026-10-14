@@ -11,9 +11,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # ================= إعدادات البوت =================
-# قراءة التوكن ومعرف الأدمن من إعدادات المنصة أماناً، أو يمكنك وضعها مباشرة هنا
-TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")  
-ADMIN_ID = int(os.getenv("ADMIN_ID", 123456789))          
+TOKEN = "8502001864:AAG9DfNx1s_U3tSpMXaUVsTF2WGAhIklLjk"  # التوكن الخاص بك
+ADMIN_ID = 0  # استبدلها بمعرف التيليجرام الخاص بك إن أردت، أو اتركها حالياً
 
 MAX_VIDEOS_PER_MONTH = 5      # الحد الأقصى للمقاطع المسموح بها لكل صانع شهرياً
 
@@ -204,7 +203,7 @@ async def show_my_account(message: types.Message):
 # ================= إحصائيات الأدمن =================
 @dp.message(Command("stats"))
 async def admin_stats(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if ADMIN_ID != 0 and message.from_user.id != ADMIN_ID:
         return
     
     current_month = datetime.now().strftime("%Y-%m")
