@@ -30,9 +30,10 @@ main_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ================= إعداد قاعدة البيانات =================
+# ================= إعداد قاعدة البيانات الدائمة =================
 def init_db():
-    conn = sqlite3.connect("creators_bot.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     cursor.execute("""
@@ -43,7 +44,6 @@ def init_db():
         )
     """)
     
-    # تحديث الجدول ليشمل حقل المشاهدات (views)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +63,7 @@ init_db()
 class Form(StatesGroup):
     waiting_for_game_id = State()
     waiting_for_video_url = State()
-    waiting_for_views = State() # حالة جديدة بانتظار إدخال المشاهدات
+    waiting_for_views = State()
 
 # ================= أمر البداية /start =================
 @dp.message(Command("start"))
@@ -71,7 +71,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     telegram_id = message.from_user.id
     
-    conn = sqlite3.connect("creators_bot.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
     user = cursor.fetchone()
@@ -94,7 +95,8 @@ async def process_game_id(message: types.Message, state: FSMContext):
     game_id = message.text.strip()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    conn = sqlite3.connect("creators_bot.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)",
                    (telegram_id, game_id, now))
@@ -115,8 +117,10 @@ async def start_submission(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     
-    conn = sqlite3.connect("creators_bot.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    # التحقق من عدد مقاطع الشهر الحالي فقط
     cursor.execute(
         "SELECT COUNT(*) FROM submissions WHERE telegram_id = ? AND submission_month = ?",
         (telegram_id, current_month)
@@ -125,7 +129,7 @@ async def start_submission(message: types.Message, state: FSMContext):
     conn.close()
     
     if count >= MAX_VIDEOS_PER_MONTH:
-        await message.answer(f"⚠️ وصلت للحد الأقصى المسموح به لهذا الشهر وهو ({MAX_VIDEOS_PER_MONTH}) مقاطع.")
+        await message.answer(f"⚠️ وصلت للحد الأقصى المسموح به لهذا الشهر ({current_month}) وهو ({MAX_VIDEOS_PER_MONTH}) مقاطع.")
         return
 
     await message.answer(f"يرجى إرسال رابط المقطع الآن (TikTok / YouTube / Instagram).\nالمتبقي لك هذا الشهر: {MAX_VIDEOS_PER_MONTH - count} مقاطع.")
@@ -147,12 +151,11 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await message.answer("⏳ عذراً، تم إغلاق استقبال المقاطع لهذا الشهر (يتم الإغلاق يوم 28).")
         return
 
-    # حفظ الرابط مؤقتاً في الذاكرة والانتقال لطلب المشاهدات
     await state.update_data(video_url=text)
     await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالية للمقطع (أرقام فقط، مثال: 1500):")
     await state.set_state(Form.waiting_for_views)
 
-# ================= استقبال عدد المشاهدات وحفظ المقطع نهائياً =================
+# ================= استقبال عدد المشاهدات وحفظ المقطع لشهر الحالي =================
 @dp.message(Form.waiting_for_views)
 async def process_video_views(message: types.Message, state: FSMContext):
     text = message.text.strip()
@@ -168,7 +171,8 @@ async def process_video_views(message: types.Message, state: FSMContext):
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    conn = sqlite3.connect("creators_bot.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -176,7 +180,7 @@ async def process_video_views(message: types.Message, state: FSMContext):
             (telegram_id, video_url, views, current_month, now)
         )
         conn.commit()
-        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views}) بنجاح!", reply_markup=main_keyboard)
+        await message.answer(f"🎉 تم تسجيل مقطعك وعدد المشاهدات ({views}) لشهر {current_month} بنجاح!", reply_markup=main_keyboard)
         await state.clear()
     except sqlite3.IntegrityError:
         await message.answer("⚠️ هذا الرابط تم تسجيله مسبقاً في النظام!", reply_markup=main_keyboard)
@@ -184,15 +188,17 @@ async def process_video_views(message: types.Message, state: FSMContext):
     finally:
         conn.close()
 
-# ================= استعراض المقاطع والبيانات الشخصية =================
+# ================= استعراض مقاطع الشهر الحالي فقط =================
 @dp.message(F.text == "📊 مقاطعي هذا الشهر")
 async def show_my_submissions(message: types.Message, state: FSMContext):
     await state.clear()
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     
-    conn = sqlite3.connect("creators_bot.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    # جلب مقاطع الشهر الحالي فقط لكي تبدأ الصفحة نظيفة مع كل شهر جديد
     cursor.execute(
         "SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?",
         (telegram_id, current_month)
@@ -201,7 +207,7 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     conn.close()
     
     if not rows:
-        await message.answer("لم تقم بإرسال أي مقاطع هذا الشهر حتى الآن.", reply_markup=main_keyboard)
+        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month} حتى الآن. تبدأ عداد 5 مقاطع جديدة هذا الشهر!", reply_markup=main_keyboard)
         return
 
     res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
@@ -214,7 +220,8 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
 async def show_my_account(message: types.Message, state: FSMContext):
     await state.clear()
     telegram_id = message.from_user.id
-    conn = sqlite3.connect("creators_bot.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
     user = cursor.fetchone()
