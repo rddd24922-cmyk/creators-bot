@@ -11,7 +11,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-# جلب التوكن بأمان من متغيرات البيئة في Railway
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
 MAX_VIDEOS_PER_MONTH = 60
@@ -88,4 +87,166 @@ def calculate_rank(views, videos_count):
         return "📌 مرشح (لم يستوفِ الحد الأدنى من شروط الرتب)"
 
 main_keyboard = ReplyKeyboardMarkup(
-    keyboard=
+    keyboard=[
+        [KeyboardButton(text="📤 إرسال مقطع جديد")],
+        [KeyboardButton(text="📊 مقاطعي هذا الشهر"), KeyboardButton(text="👤 حسابي المعرّف")]
+    ],
+    resize_keyboard=True
+)
+
+cancel_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="❌ إلغاء / كنسل")]
+    ],
+    resize_keyboard=True
+)
+
+async def daily_report_scheduler():
+    while True:
+        clean_old_submissions()
+        now = datetime.now()
+        
+        if now.day == 27 and now.hour == 12 and now.minute == 0:
+            if ADMIN_GROUP_ID != 0:
+                try:
+                    await bot.send_message(
+                        ADMIN_GROUP_ID, 
+                        "⚠️ **تنبيه إداري تلقائي:** بقي يومان على إغلاق استقبال المقاطع (يوم 28). نذكر الجميع بأن حذف الفيديوهات ممنوع تماماً ويؤدي للاستبعاد!"
+                    )
+                except Exception as e:
+                    logging.error(f"Error sending alert: {e}")
+
+        target_time = now.replace(hour=23, minute=59, second=0, microsecond=0)
+        if now >= target_time:
+            target_time = target_time.replace(day=target_time.day + 1)
+            
+        wait_seconds = (target_time - datetime.now()).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        
+        if ADMIN_GROUP_ID != 0:
+            today_date = datetime.now().strftime("%Y-%m-%d")
+            conn = sqlite3.connect(get_db_path())
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT u.game_id, s.video_url, s.views, s.created_at 
+                FROM submissions s 
+                LEFT JOIN users u ON s.telegram_id = u.telegram_id 
+                WHERE DATE(s.created_at) = ?
+            """, (today_date,))
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if rows:
+                report_text = f"📊 **التقرير اليومي الشامل للمقاطع المسجلة ({today_date}):**\n\n"
+                for idx, row in enumerate(rows, 1):
+                    report_text += f"{idx}. 🎮 Game ID: `{row[0] or 'غير معروف'}`\n   🔗 الرابط: {row[1]}\n   👁 المشاهدات: **{row[2]:,}**\n   🗓 الوقت: {row[3]}\n\n"
+                try:
+                    await bot.send_message(ADMIN_GROUP_ID, report_text, parse_mode="Markdown", disable_web_page_preview=True)
+                except Exception as e:
+                    logging.error(f"Failed to send daily report: {e}")
+            else:
+                try:
+                    await bot.send_message(ADMIN_GROUP_ID, f"📊 **التقرير اليومي ({today_date}):**\nلم يتم تسجيل أي مقاطع جديدة اليوم.", parse_mode="Markdown")
+                except Exception as e:
+                    logging.error(f"Failed to send empty report: {e}")
+                    
+        await asyncio.sleep(60)
+
+@dp.message(F.text == "❌ إلغاء / كنسل")
+@dp.message(Command("cancel", "reset", "fix"))
+async def cancel_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🔄 **تم إلغاء العملية وفك التعليق بنجاح!**", reply_markup=main_keyboard, parse_mode="Markdown")
+
+@dp.message(Command("myid"))
+async def get_group_id(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(f"🆔 معرف المحادثة (Chat ID): `{message.chat.id}`", parse_mode="Markdown")
+
+@dp.message(Command("admin_stats"))
+async def admin_stats_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    current_month = datetime.now().strftime("%Y-%m")
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT u.game_id, COUNT(s.id), SUM(s.views)
+        FROM users u
+        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ?
+        GROUP BY u.telegram_id
+    """, (current_month,))
+    creators = cursor.fetchall()
+    conn.close()
+    
+    if not creators:
+        await message.answer(f"📊 لا توجد أي بيانات مسجلة لصناع المحتوى لشهر {current_month} حتى الآن.")
+        return
+
+    text = f"👑 **تقرير رتب وإحصائيات صناع المحتوى لشهر {current_month}:**\n\n"
+    for idx, c in enumerate(creators, 1):
+        v_count, v_views = c[1] or 0, c[2] or 0
+        text += f"{idx}. 🎮 Game ID: `{c[0]}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {calculate_rank(v_views, v_count)}\n\n"
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("admin_summary"))
+async def admin_summary_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    current_month = datetime.now().strftime("%Y-%m")
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(views), COUNT(id) FROM submissions WHERE submission_month = ?", (current_month,))
+    total_stats = cursor.fetchone()
+    total_views = total_stats[0] or 0
+    total_videos = total_stats[1] or 0
+    
+    cursor.execute("""
+        SELECT u.game_id, SUM(s.views) as total_v, COUNT(s.id) as v_count
+        FROM users u
+        JOIN submissions s ON u.telegram_id = s.telegram_id
+        WHERE s.submission_month = ?
+        GROUP BY u.telegram_id
+        ORDER BY total_v DESC
+        LIMIT 10
+    """, (current_month,))
+    top_creators = cursor.fetchall()
+    conn.close()
+
+    summary_text = f"📈 **ملخص المشاهدات العام لشهر {current_month}:**\n"
+    summary_text += f"• إجمالي المشاهدات لكل المقاطع: **{total_views:,}** 👁\n"
+    summary_text += f"• إجمالي عدد المقاطع المرفوعة: **{total_videos}** 📹\n"
+    summary_text += f"━━━━━━━━━━━━━━━━━━━\n"
+    summary_text += f"🏆 **أفضل صناع المحتوى (أعلى مشاهدات):**\n\n"
+
+    if not top_creators:
+        summary_text += "لا توجد أي مشاهدات مسجلة حتى الآن."
+    else:
+        for idx, creator in enumerate(top_creators, 1):
+            summary_text += f"{idx}. Game ID: `{creator[0]}`\n   👁 المشاهدات: **{creator[1]:,}** | 📹 المقاطع: {creator[2]}\n\n"
+
+    await message.answer(summary_text, parse_mode="Markdown")
+
+@dp.message(F.text == "📊 مقاطعي هذا الشهر")
+async def show_my_submissions(message: types.Message, state: FSMContext):
+    await state.clear()
+    telegram_id = message.from_user.id
+    current_month = datetime.now().strftime("%Y-%m")
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    rows = cursor.fetchall()
+    
+    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    stats = cursor.fetchone()
+    conn.close()
+    
+    v_count, total_views = stats[0] or 0, stats[1] or 0
+    if not rows:
+        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month} حتى الآن.", reply_markup=main_keyboard)
+        return
+
+    res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
+    for idx, row in enumerate(rows, 1):
+        res += f"{idx}. {row[0]}\n👁 المشاهدات: **{row[1]:,}**\n🗓 {row[2]}\n\n"
+    res += f"━━━━━━━━━━━━━━━━━━━\n📈 **إجمالي
