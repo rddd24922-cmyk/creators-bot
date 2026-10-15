@@ -82,39 +82,39 @@ class Form(StatesGroup):
 
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
-        return "Emperor (24,000)"
+        return "👑 إمبراطور (مكافأة 24,000 صدفة + تأهل لجائزة طماطم بلس)"
     elif views >= 1000000 and videos_count >= 20:
-        return "Icon (20,000)"
+        return "💎 أيقونة (مكافأة 20,000 صدفة)"
     elif views >= 500000 and videos_count >= 20:
-        return "Legend (16,000)"
+        return "🏆 أسطورة (مكافأة 16,000 صدفة)"
     elif views >= 100000 and videos_count >= 20:
-        return "Sultan (13,000)"
+        return "⚡ سلطان (مكافأة 13,000 صدفة)"
     elif views >= 50000 and videos_count >= 20:
-        return "Leader (9,000)"
+        return "🔥 زعيم (مكافأة 9,000 صدفة)"
     elif views >= 15000 and videos_count >= 15:
-        return "Commander (6,000)"
+        return "🎖 قائد (مكافأة 6,000 صدفة)"
     elif views >= 5000 and videos_count >= 12:
-        return "Knight (3,500)"
+        return "⭐ فارس (مكافأة 3,500 صدفة)"
     elif views >= 1500 and videos_count >= 8:
-        return "Warrior (2,000)"
+        return "⚔️ محارب (مكافأة 2,000 صدفة)"
     elif views >= 150 and videos_count >= 5:
-        return "Recruit (800)"
+        return "🛡️ مجند (مكافأة 800 صدفة)"
     elif views >= 50 and videos_count >= 1:
-        return "Beginner (200)"
+        return "🌱 مبتدئ (مكافأة 200 صدفة)"
     else:
-        return "Candidate"
+        return "📌 مرشح (لم يستوفِ الحد الأدنى من شروط الرتب)"
 
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Submit New Video")],
-        [KeyboardButton(text="My Submissions"), KeyboardButton(text="My Game ID")]
+        [KeyboardButton(text="إرسال مقطع جديد")],
+        [KeyboardButton(text="مقاطعي هذا الشهر"), KeyboardButton(text="حسابي المعرّف")]
     ],
     resize_keyboard=True
 )
 
 cancel_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Cancel")]
+        [KeyboardButton(text="إلغاء")]
     ],
     resize_keyboard=True
 )
@@ -127,7 +127,7 @@ async def daily_report_scheduler():
         if now.day == 27 and now.hour == 12 and now.minute == 0:
             if ADMIN_GROUP_ID != 0:
                 try:
-                    await bot.send_message(ADMIN_GROUP_ID, "Reminder: 2 days left before submission closes.")
+                    await bot.send_message(ADMIN_GROUP_ID, "⚠️ تنبيه: بقي يومان على إغلاق استقبال المقاطع.")
                 except Exception as e:
                     logging.error(f"Error: {e}")
 
@@ -147,16 +147,16 @@ async def daily_report_scheduler():
             conn.close()
             
             if rows:
-                report_text = f"Daily Report ({today_date}):\n\n"
+                report_text = f"📊 التقرير اليومي ({today_date}):\n\n"
                 for idx, row in enumerate(rows, 1):
-                    report_text += f"{idx}. Game ID: {row[0] or 'Unknown'}\nURL: {row[1]}\nViews: {row[2]:,}\nTime: {row[3]}\n\n"
+                    report_text += f"{idx}. Game ID: {row[0] or 'غير معروف'}\nالرابط: {row[1]}\nالمشاهدات: {row[2]:,}\n\n"
                 try:
                     await bot.send_message(ADMIN_GROUP_ID, report_text, disable_web_page_preview=True)
                 except Exception as e:
                     logging.error(f"Error: {e}")
             else:
                 try:
-                    await bot.send_message(ADMIN_GROUP_ID, f"Daily Report ({today_date}): No submissions today.")
+                    await bot.send_message(ADMIN_GROUP_ID, f"📊 التقرير اليومي ({today_date}): لا توجد مقاطع جديدة.")
                 except Exception as e:
                     logging.error(f"Error: {e}")
                     
@@ -169,7 +169,7 @@ async def allow_user(message: types.Message, state: FSMContext):
         return
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
-        await message.answer("Usage: /allow TELEGRAM_ID")
+        await message.answer("⚠️ طريقة الاستخدام: /allow [Telegram_ID]")
         return
     target_id = int(args[1].strip())
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -178,9 +178,9 @@ async def allow_user(message: types.Message, state: FSMContext):
     try:
         cursor.execute("INSERT INTO whitelist (telegram_id, added_at) VALUES (?, ?)", (target_id, now))
         conn.commit()
-        await message.answer(f"User {target_id} allowed successfully.")
+        await message.answer(f"✅ تمت إضافة الحساب {target_id} بنجاح.")
     except sqlite3.IntegrityError:
-        await message.answer("User already allowed.")
+        await message.answer("⚠️ الحساب مضاف مسبقاً.")
     finally:
         conn.close()
 
@@ -198,14 +198,14 @@ async def unallow_user(message: types.Message, state: FSMContext):
     cursor.execute("DELETE FROM whitelist WHERE telegram_id = ?", (target_id,))
     conn.commit()
     conn.close()
-    await message.answer(f"User {target_id} removed.")
+    await message.answer(f"🗑 تم إزالة الحساب {target_id}.")
 
-@dp.message(F.text.in_({"Cancel", "إلغاء", "كنسل"}))
+@dp.message(F.text.in_({"إلغاء", "كنسل"}))
 @dp.message(Command("cancel", "reset", "fix", "start"))
 async def global_commands_handler(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
     if not is_allowed(telegram_id):
-        await message.answer("Access denied. Authorized users only.")
+        await message.answer("⛔ عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.")
         return
     await state.clear()
     if message.text and message.text.startswith("/start"):
@@ -215,12 +215,12 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
         user = cursor.fetchone()
         conn.close()
         if user:
-            await message.answer(f"Welcome back! Your registered Game ID is: {user[0]}", reply_markup=main_keyboard)
+            await message.answer(f"أهلاً بك مجدداً! معرّف اللعبة المسجل بحسابك: {user[0]}", reply_markup=main_keyboard)
         else:
-            await message.answer("Welcome! Please send your Game ID to begin:", reply_markup=cancel_keyboard)
+            await message.answer("أهلاً بك! يرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
             await state.set_state(Form.waiting_for_game_id)
     else:
-        await message.answer("Operation cancelled successfully.", reply_markup=main_keyboard)
+        await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
@@ -229,7 +229,7 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     await state.clear()
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("Usage: /user GAME_ID")
+        await message.answer("⚠️ طريقة الاستخدام: /user [Game_ID]")
         return
     target_game_id = args[1].strip()
     current_month = datetime.now().strftime("%Y-%m")
@@ -239,7 +239,7 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     user_info = cursor.fetchone()
     if not user_info:
         conn.close()
-        await message.answer(f"No creator found with Game ID: {target_game_id}")
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: {target_game_id}")
         return
     telegram_id = user_info[0]
     cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
@@ -249,19 +249,20 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     conn.close()
     v_count, total_views = stats[0] or 0, stats[1] or 0
     rank = calculate_rank(total_views, v_count)
-    report = f"Stats for Game ID {target_game_id}:\nViews: {total_views:,}\nVideos: {v_count}\nRank: {rank}\n\n"
+    report = f"👤 تقرير إنجازات صانع المحتوى ({target_game_id}):\nإجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nالرتبة: {rank}\n\n"
     if submissions:
-        report += "Submissions:\n"
+    
+        report += "سجل المقاطع:\n"
         for idx, sub in enumerate(submissions, 1):
-            report += f"{idx}. {sub[0]} - Views: {sub[1]:,} - {sub[2]}\n"
+            report += f"{idx}. {sub[0]} - المشاهدات: {sub[1]:,}\n"
     else:
-        report += "No submissions this month."
+        report += "لا توجد مقاطع مرفوعة هذا الشهر."
     await message.answer(report, disable_web_page_preview=True)
 
 @dp.message(Command("myid"))
 async def get_group_id(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(f"Chat ID: {message.chat.id}\nTelegram ID: {message.from_user.id}")
+    await message.answer(f"معرّف المحادثة (Chat ID): {message.chat.id}\nمعرّف حسابك (Telegram ID): {message.from_user.id}")
 
 @dp.message(Command("admin_stats"))
 async def admin_stats_handler(message: types.Message, state: FSMContext):
@@ -275,12 +276,12 @@ async def admin_stats_handler(message: types.Message, state: FSMContext):
     creators = cursor.fetchall()
     conn.close()
     if not creators:
-        await message.answer(f"No records found for {current_month}.")
+        await message.answer(f"لا توجد بيانات لشهر {current_month}.")
         return
-    text = f"Creators Stats for {current_month}:\n\n"
+    text = f"📊 إحصائيات صناع المحتوى لشهر {current_month}:\n\n"
     for idx, c in enumerate(creators, 1):
         v_count, v_views = c[1] or 0, c[2] or 0
-        text += f"{idx}. Game ID: {c[0]} - Videos: {v_count} - Views: {v_views:,} - Rank: {calculate_rank(v_views, v_count)}\n"
+        text += f"{idx}. Game ID: {c[0]} | الفيديوهات: {v_count} | المشاهدات: {v_views:,} | الرتبة: {calculate_rank(v_views, v_count)}\n"
     await message.answer(text)
 
 @dp.message(Command("admin_summary"))
@@ -298,15 +299,15 @@ async def admin_summary_handler(message: types.Message, state: FSMContext):
     cursor.execute("SELECT u.game_id, SUM(s.views) as total_v, COUNT(s.id) as v_count FROM users u JOIN submissions s ON u.telegram_id = s.telegram_id WHERE s.submission_month = ? GROUP BY u.telegram_id ORDER BY total_v DESC LIMIT 10", (current_month,))
     top_creators = cursor.fetchall()
     conn.close()
-    summary_text = f"Summary for {current_month}:\nTotal Views: {total_views:,}\nTotal Videos: {total_videos}\n\nTop Creators:\n"
+    summary_text = f"📈 الملخص العام لشهر {current_month}:\nإجمالي المشاهدات: {total_views:,}\nإجمالي الفيديوهات: {total_videos}\n\n🏆 أفضل صناع المحتوى:\n"
     if not top_creators:
-        summary_text += "No views recorded yet."
+        summary_text += "لا توجد مشاهدات مسجلة."
     else:
         for idx, creator in enumerate(top_creators, 1):
-            summary_text += f"{idx}. Game ID: {creator[0]} - Views: {creator[1]:,} - Videos: {creator[2]}\n"
+            summary_text += f"{idx}. Game ID: {creator[0]} - المشاهدات: {creator[1]:,}\n"
     await message.answer(summary_text)
 
-@dp.message(F.text.contains("My Submissions"))
+@dp.message(F.text.contains("مقاطعي هذا الشهر"))
 async def show_my_submissions(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
@@ -322,15 +323,15 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     conn.close()
     v_count, total_views = stats[0] or 0, stats[1] or 0
     if not rows:
-        await message.answer(f"No submissions for {current_month}.", reply_markup=main_keyboard)
+        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month}.", reply_markup=main_keyboard)
         return
-    res = f"Your submissions for {current_month}:\n\n"
+    res = f"🎬 مقاطعك المسجلة لشهر {current_month}:\n\n"
     for idx, row in enumerate(rows, 1):
-        res += f"{idx}. {row[0]}\nViews: {row[1]:,} | {row[2]}\n\n"
-    res += f"Total Views: {total_views:,}\nTotal Videos: {v_count}\nRank: {calculate_rank(total_views, v_count)}"
+        res += f"{idx}. {row[0]}\nالمشاهدات: {row[1]:,} | {row[2]}\n\n"
+    res += f"إجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nرتبتك الحالية: {calculate_rank(total_views, v_count)}"
     await message.answer(res, disable_web_page_preview=True, reply_markup=main_keyboard)
 
-@dp.message(F.text.contains("My Game ID"))
+@dp.message(F.text.contains("حسابي المعرّف"))
 async def show_my_account(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
@@ -342,9 +343,9 @@ async def show_my_account(message: types.Message, state: FSMContext):
     user = cursor.fetchone()
     conn.close()
     if user:
-        await message.answer(f"Your registered Game ID is: {user[0]}", reply_markup=main_keyboard)
+        await message.answer(f"معرّف اللعبة المسجل بحسابك هو: {user[0]}", reply_markup=main_keyboard)
     else:
-        await message.answer("Not registered. Send /start to register.", reply_markup=main_keyboard)
+        await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
 
 @dp.message(Form.waiting_for_game_id)
 async def process_game_id(message: types.Message, state: FSMContext):
@@ -353,7 +354,7 @@ async def process_game_id(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
     game_id = message.text.strip()
     if not game_id.isdigit():
-        await message.answer("Please send a valid numeric Game ID:", reply_markup=cancel_keyboard)
+        await message.answer("يرجى إرسال معرّف لاعب صحيح يتكون من أرقام فقط:", reply_markup=cancel_keyboard)
         return
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(get_db_path())
@@ -362,20 +363,20 @@ async def process_game_id(message: types.Message, state: FSMContext):
         cursor.execute("INSERT INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)", (telegram_id, game_id, now))
         conn.commit()
         await state.clear()
-        await message.answer(f"Game ID {game_id} registered successfully!", reply_markup=main_keyboard)
+        await message.answer(f"تم ربط حسابك بمعرّف اللعبة: {game_id} بنجاح!", reply_markup=main_keyboard)
     except sqlite3.IntegrityError:
         cursor.execute("SELECT telegram_id FROM users WHERE game_id = ?", (game_id,))
         owner = cursor.fetchone()
         if owner and owner[0] == telegram_id:
             await state.clear()
-            await message.answer(f"You are already registered with Game ID: {game_id}", reply_markup=main_keyboard)
+            await message.answer(f"أنت مسجل مسبقاً بهذا المعرّف: {game_id}", reply_markup=main_keyboard)
         else:
-            await message.answer("This Game ID is already registered by another user.", reply_markup=main_keyboard)
+            await message.answer("عذراً، هذا المعرّف مسجل بحساب صانع محتوى آخر.", reply_markup=main_keyboard)
             await state.clear()
     finally:
         conn.close()
 
-@dp.message(F.text.contains("Submit New Video"))
+@dp.message(F.text.contains("إرسال مقطع جديد"))
 async def start_submission(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
@@ -387,16 +388,16 @@ async def start_submission(message: types.Message, state: FSMContext):
     user = cursor.fetchone()
     if not user:
         conn.close()
-        await message.answer("You are not registered! Send /start first.", reply_markup=main_keyboard)
+        await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
         return
     current_month = datetime.now().strftime("%Y-%m")
     cursor.execute("SELECT COUNT(*) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
     count = cursor.fetchone()[0]
     conn.close()
     if count >= MAX_VIDEOS_PER_MONTH:
-        await message.answer("You have reached the monthly limit.", reply_markup=main_keyboard)
+        await message.answer("لقد وصلت للحد الأقصى من المقاطع لهذا الشهر.", reply_markup=main_keyboard)
         return
-    await message.answer("Send the video URL (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
+    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
 URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com|facebook\.com|fb\.watch)/\S+)"
@@ -407,12 +408,12 @@ async def process_video_url(message: types.Message, state: FSMContext):
         return
     text = message.text.strip()
     if not re.search(URL_PATTERN, text):
-        await message.answer("Invalid URL. Send a valid link:", reply_markup=cancel_keyboard)
+        await message.answer("الرابط غير صالح! يرجى إرسال رابط صحيح:", reply_markup=cancel_keyboard)
         return
     match = re.search(URL_PATTERN, text)
     clean_url = match.group(0) if match else text
     await state.update_data(video_url=clean_url)
-    await message.answer("Send the current views (numbers only):", reply_markup=cancel_keyboard)
+    await message.answer("ممتاز! الآن أرسل عدد المشاهدات الحالية للمقطع (أرقام فقط):", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_views)
 
 @dp.message(Form.waiting_for_views)
@@ -421,7 +422,7 @@ async def process_video_views(message: types.Message, state: FSMContext):
         return
     text = message.text.strip()
     if not text.isdigit():
-        await message.answer("Please send numbers only for views:", reply_markup=cancel_keyboard)
+        await message.answer("يرجى إرسال أرقام صحيحة فقط للمشاهدات:", reply_markup=cancel_keyboard)
         return
     views = int(text)
     data = await state.get_data()
@@ -437,10 +438,10 @@ async def process_video_views(message: types.Message, state: FSMContext):
         cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
         stats = cursor.fetchone()
         current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
-        await message.answer(f"Video registered successfully!\nTotal Views: {stats[1]:,}\nRank: {current_rank}", reply_markup=main_keyboard)
+        await message.answer(f"تم تسجيل مقطعك بنجاح!\nإجمالي المشاهدات: {stats[1]:,}\nرتبتك الحالية: {current_rank}", reply_markup=main_keyboard)
         await state.clear()
     except sqlite3.IntegrityError:
-        await message.answer("This URL is already registered!", reply_markup=main_keyboard)
+        await message.answer("هذا الرابط مسجل مسبقاً في النظام!", reply_markup=main_keyboard)
         await state.clear()
     finally:
         conn.close()
