@@ -5,7 +5,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -14,6 +14,9 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
 MAX_VIDEOS_PER_MONTH = 60
+
+# أضف هنا معرف حسابك في التليجرام (Telegram ID) لتصلك صلاحية الإدارة دائماً
+ADMIN_IDS = [ADMIN_GROUP_ID]  # يمكنك إضافة معرفك الشخصي هنا مثل: [ADMIN_GROUP_ID, 12345678]
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -27,6 +30,14 @@ def get_db_path():
 def init_db():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
+    
+    # جدول القائمة البيضاء (المصرح لهم فقط)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS whitelist (
+            telegram_id INTEGER PRIMARY KEY,
+            added_at TEXT
+        )
+    """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             telegram_id INTEGER PRIMARY KEY,
@@ -48,6 +59,16 @@ def init_db():
     conn.close()
 
 init_db()
+
+def is_allowed(telegram_id: int) -> bool:
+    if telegram_id in ADMIN_IDS:
+        return True
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id FROM whitelist WHERE telegram_id = ?", (telegram_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res is not None
 
 def clean_old_submissions():
     conn = sqlite3.connect(get_db_path())
@@ -152,15 +173,88 @@ async def daily_report_scheduler():
                     
         await asyncio.sleep(60)
 
-# معالجة الإلغاء والأوامر العامة لتفكيك أي تعليق فوراً
+# ==================== أوامر إدارة القائمة البيضاء ====================
+
+@dp.message(Command("allow"))
+async def allow_user(message: types.Message, state: FSMContext):
+    await state.clear()
+    if message.from_user.id not in ADMIN_IDS and message.chat.id != ADMIN_GROUP_ID:
+        return
+    
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip().isdigit():
+        await message.answer("⚠️ **استخدام صحيح:**\n`/allow 12345678` (ضع معرف التليجرام الخاص بالمستخدم)", parse_mode="Markdown")
+        return
+        
+    target_id = int(args[1].strip())
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO whitelist (telegram_id, added_at) VALUES (?, ?)", (target_id, now))
+        conn.commit()
+        await message.answer(f"✅ **تمت إضافة الحساب `{target_id}` إلى القائمة المسموحة بنجاح!**", parse_mode="Markdown")
+    except sqlite3.IntegrityError:
+        await message.answer("⚠️ هذا الحساب مسموح له بالفعل مسبقاً.")
+    finally:
+        conn.close()
+
+@dp.message(Command("unallow"))
+async def unallow_user(message: types.Message, state: FSMContext):
+    await state.clear()
+    if message.from_user.id not in ADMIN_IDS and message.chat.id != ADMIN_GROUP_ID:
+        return
+        
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip().isdigit():
+        await message.answer("⚠️ **استخدام صحيح:**\n`/unallow 12345678`", parse_mode="Markdown")
+        return
+        
+    target_id = int(args[1].strip())
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM whitelist WHERE telegram_id = ?", (target_id,))
+    conn.commit()
+    conn.close()
+    await message.answer(f"🗑 **تم إزالة الحساب `{target_id}` من القائمة المسموحة.**", parse_mode="Markdown")
+
+@dp.message(Command("allowed_users"))
+async def list_allowed_users(message: types.Message, state: FSMContext):
+    await state.clear()
+    if message.from_user.id not in ADMIN_IDS and message.chat.id != ADMIN_GROUP_ID:
+        return
+        
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id, added_at FROM whitelist")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        await message.answer("📋 **القائمة البيضاء فارغة حالياً.**")
+        return
+        
+    res = "📋 **قائمة حسابات التليجرام المصرح لها:**\n\n"
+    for idx, r in enumerate(rows, 1):
+        res += f"{idx}. `{r[0]}` (أضيف بتاريخ: {r[1]})\n"
+    await message.answer(res, parse_mode="Markdown")
+
+# ==================== الأوامر العامة وأزرار الخدمة ====================
+
 @dp.message(F.text.in_({"❌ إلغاء / كنسل", "إلغاء", "كنسل"}))
 @dp.message(Command("cancel", "reset", "fix", "start"))
 async def global_commands_handler(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
+    telegram_id = message.from_user.id
+    
+    # التحقق من أن المستخدم مصرح له
+    if not is_allowed(telegram_id):
+        await message.answer("⛔ **عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.**", parse_mode="Markdown")
+        return
+        
     await state.clear()
     
     if message.text and message.text.startswith("/start"):
-        telegram_id = message.from_user.id
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
         cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
@@ -177,6 +271,10 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
 
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        await message.answer("⛔ **عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.**", parse_mode="Markdown")
+        return
+        
     await state.clear()
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
@@ -226,10 +324,12 @@ async def search_user_stats(message: types.Message, state: FSMContext):
 @dp.message(Command("myid"))
 async def get_group_id(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(f"🆔 معرف المحادثة (Chat ID): `{message.chat.id}`", parse_mode="Markdown")
+    await message.answer(f"🆔 معرف المحادثة (Chat ID): `{message.chat.id}`\n🆔 معرف حسابك (Telegram ID): `{message.from_user.id}`", parse_mode="Markdown")
 
 @dp.message(Command("admin_stats"))
 async def admin_stats_handler(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
     await state.clear()
     current_month = datetime.now().strftime("%Y-%m")
     conn = sqlite3.connect(get_db_path())
@@ -255,6 +355,8 @@ async def admin_stats_handler(message: types.Message, state: FSMContext):
 
 @dp.message(Command("admin_summary"))
 async def admin_summary_handler(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
     await state.clear()
     current_month = datetime.now().strftime("%Y-%m")
     
@@ -293,6 +395,9 @@ async def admin_summary_handler(message: types.Message, state: FSMContext):
 
 @dp.message(F.text.contains("مقاطعي هذا الشهر"))
 async def show_my_submissions(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        await message.answer("⛔ **عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.**", parse_mode="Markdown")
+        return
     await state.clear()
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
@@ -319,6 +424,9 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
 
 @dp.message(F.text.contains("حسابي المعرّف"))
 async def show_my_account(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        await message.answer("⛔ **عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.**", parse_mode="Markdown")
+        return
     await state.clear()
     telegram_id = message.from_user.id
     conn = sqlite3.connect(get_db_path())
@@ -334,6 +442,9 @@ async def show_my_account(message: types.Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_game_id)
 async def process_game_id(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        await message.answer("⛔ **عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.**", parse_mode="Markdown")
+        return
     telegram_id = message.from_user.id
     game_id = message.text.strip()
     
@@ -364,6 +475,9 @@ async def process_game_id(message: types.Message, state: FSMContext):
 
 @dp.message(F.text.contains("إرسال مقطع جديد"))
 async def start_submission(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        await message.answer("⛔ **عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.**", parse_mode="Markdown")
+        return
     await state.clear()
     telegram_id = message.from_user.id
     conn = sqlite3.connect(get_db_path())
@@ -398,6 +512,8 @@ URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|
 
 @dp.message(Form.waiting_for_video_url)
 async def process_video_url(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
     text = message.text.strip()
     if not re.search(URL_PATTERN, text):
         await message.answer("❌ الرابط غير صالح! يرجى إرسال رابط صحيح (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
@@ -412,6 +528,8 @@ async def process_video_url(message: types.Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_views)
 async def process_video_views(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
     text = message.text.strip()
     if not text.isdigit():
         await message.answer("❌ يرجى إرسال أرقام صحيحة فقط للمشاهدات أو اضغط على زر الإلغاء أدناه:", reply_markup=cancel_keyboard)
