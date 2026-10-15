@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # ================= إعدادات البوت =================
 TOKEN = "8502001864:AAG9DfNx1s_U3tSpMXaUVsTF2WGAhIklLjk"
@@ -20,23 +20,6 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
-
-# ================= لوحات الأزرار (Keyboards) =================
-main_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📤 إرسال مقطع جديد")],
-        [KeyboardButton(text="📊 مقاطعي هذا الشهر"), KeyboardButton(text="👤 حسابي المعرّف")]
-    ],
-    resize_keyboard=True
-)
-
-# كيبورد الإلغاء السريع الذي يظهر أثناء إدخال البيانات
-cancel_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="❌ إلغاء / كنسل")]
-    ],
-    resize_keyboard=True
-)
 
 # ================= مسار قاعدة البيانات =================
 def get_db_path():
@@ -116,7 +99,7 @@ async def daily_report_scheduler():
             if ADMIN_GROUP_ID != 0:
                 await bot.send_message(
                     ADMIN_GROUP_ID, 
-                    "⚠️ **تنبيه إداري تلقائي:** بقي يومان على إغلاق استقبال المقاطع (يوم 28). نذكر الجميع بأن حذف الفيديوهات ممنوع تماماً ويؤدي للاستبعاد!"
+                    "⚠️ تنبيه إداري تلقائي: بقي يومان على إغلاق استقبال المقاطع (يوم 28). نذكر الجميع بأن حذف الفيديوهات ممنوع تماماً ويؤدي للاستبعاد!"
                 )
 
         target_time = now.replace(hour=23, minute=59, second=0, microsecond=0)
@@ -140,26 +123,42 @@ async def daily_report_scheduler():
             conn.close()
             
             if rows:
-                report_text = f"📊 **التقرير اليومي الشامل للمقاطع المسجلة ({today_date}):**\n\n"
+                report_text = f"📊 التقرير اليومي الشامل للمقاطع المسجلة ({today_date}):\n\n"
                 for idx, row in enumerate(rows, 1):
-                    report_text += f"{idx}. 🎮 Game ID: `{row[0] or 'غير معروف'}`\n   🔗 الرابط: {row[1]}\n   👁 المشاهدات: **{row[2]:,}**\n   🗓 الوقت: {row[3]}\n\n"
+                    report_text += f"{idx}. Game ID: {row[0] or 'غير معروف'}\n   الرابط: {row[1]}\n   المشاهدات: {row[2]:,}\n   الوقت: {row[3]}\n\n"
                 try:
-                    await bot.send_message(ADMIN_GROUP_ID, report_text, parse_mode="Markdown", disable_web_page_preview=True)
+                    await bot.send_message(ADMIN_GROUP_ID, report_text, disable_web_page_preview=True)
                 except Exception as e:
                     logging.error(f"Failed to send daily report: {e}")
         await asyncio.sleep(60)
 
-# ================= معالجة زر إلغاء / كنسل والأوامر =================
+# ================= لوحات الأزرار =================
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📤 إرسال مقطع جديد")],
+        [KeyboardButton(text="📊 مقاطعي هذا الشهر"), KeyboardButton(text="👤 حسابي المعرّف")]
+    ],
+    resize_keyboard=True
+)
+
+cancel_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="❌ إلغاء / كنسل")]
+    ],
+    resize_keyboard=True
+)
+
+# ================= الأوامر =================
 @dp.message(F.text == "❌ إلغاء / كنسل")
 @dp.message(Command("cancel", "reset", "fix"))
 async def cancel_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("🔄 **تم إلغاء العملية وفك التعليق بنجاح!**", reply_markup=main_keyboard, parse_mode="Markdown")
+    await message.answer("🔄 تم إلغاء العملية وفك التعليق بنجاح!", reply_markup=main_keyboard)
 
 @dp.message(Command("myid"))
 async def get_group_id(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(f"🆔 معرف المحادثة (Chat ID): `{message.chat.id}`", parse_mode="Markdown")
+    await message.answer(f"🆔 معرف المحادثة (Chat ID): {message.chat.id}")
 
 @dp.message(Command("admin_stats"))
 async def admin_stats_handler(message: types.Message, state: FSMContext):
@@ -180,11 +179,11 @@ async def admin_stats_handler(message: types.Message, state: FSMContext):
         await message.answer(f"📊 لا توجد أي بيانات مسجلة لصناع المحتوى لشهر {current_month} حتى الآن.")
         return
 
-    text = f"👑 **تقرير رتب وإحصائيات صناع المحتوى لشهر {current_month}:**\n\n"
+    text = f"👑 تقرير رتب وإحصائيات صناع المحتوى لشهر {current_month}:\n\n"
     for idx, c in enumerate(creators, 1):
         v_count, v_views = c[1] or 0, c[2] or 0
-        text += f"{idx}. 🎮 Game ID: `{c[0]}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {calculate_rank(v_views, v_count)}\n\n"
-    await message.answer(text, parse_mode="Markdown")
+        text += f"{idx}. Game ID: {c[0]}\n   عدد المقاطع: {v_count}\n   إجمالي المشاهدات: {v_views:,}\n   الرتبة المستحقة: {calculate_rank(v_views, v_count)}\n\n"
+    await message.answer(text)
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -197,9 +196,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
     conn.close()
     
     if user:
-        await message.answer(f"أهلاً بك مجدداً يا بطل أرض الشجعان! 🎬\nمعرّفك المسجل بحسابك: `{user[0]}`", reply_markup=main_keyboard, parse_mode="Markdown")
+        await message.answer(f"أهلاً بك مجدداً يا بطل أرض الشجعان!\nمعرّفك المسجل بحسابك: {user[0]}", reply_markup=main_keyboard)
     else:
-        await message.answer("أهلاً بك في بوت برنامج صناع المحتوى (أرض الشجعان)! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:", reply_markup=cancel_keyboard)
+        await message.answer("أهلاً بك في بوت برنامج صناع المحتوى (أرض الشجعان)!\nيرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
         await state.set_state(Form.waiting_for_game_id)
 
 @dp.message(Form.waiting_for_game_id)
@@ -214,15 +213,15 @@ async def process_game_id(message: types.Message, state: FSMContext):
         cursor.execute("INSERT INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)", (telegram_id, game_id, now))
         conn.commit()
         await state.clear()
-        await message.answer(f"✅ تم ربط حسابك حصرياً بمعرّف اللعبة: `{game_id}` بنجاح!", reply_markup=main_keyboard, parse_mode="Markdown")
+        await message.answer(f"✅ تم ربط حسابك حصرياً بمعرّف اللعبة: {game_id} بنجاح!", reply_markup=main_keyboard)
     except sqlite3.IntegrityError:
         cursor.execute("SELECT telegram_id FROM users WHERE game_id = ?", (game_id,))
         owner = cursor.fetchone()
         if owner and owner[0] == telegram_id:
             await state.clear()
-            await message.answer(f"✅ أنت مسجل مسبقاً بهذا المعرّف: `{game_id}`", reply_markup=main_keyboard, parse_mode="Markdown")
+            await message.answer(f"✅ أنت مسجل مسبقاً بهذا المعرّف: {game_id}", reply_markup=main_keyboard)
         else:
-            await message.answer("❌ **عذراً، هذا المعرّف (Game ID) مسجل مسبقاً بحساب صانع محتوى آخر!**", reply_markup=main_keyboard, parse_mode="Markdown")
+            await message.answer("❌ عذراً، هذا المعرّف (Game ID) مسجل مسبقاً بحساب صانع محتوى آخر!", reply_markup=main_keyboard)
             await state.clear()
     finally:
         conn.close()
@@ -251,12 +250,12 @@ async def start_submission(message: types.Message, state: FSMContext):
         return
 
     guideline_text = (
-        "📌 **تعليمات تقديم المحتوى:**\n"
-        "• تأكد أن المحتوى متعلق بلعبة **أرض الشجعان**.\n"
+        "📌 تعليمات تقديم المحتوى:\n"
+        "• تأكد أن المحتوى متعلق بلعبة أرض الشجعان.\n"
         "• ممنوع تماماً حذف الفيديوهات بعد نشرها.\n\n"
         "يرجى إرسال رابط المقطع الآن (TikTok / YouTube / Instagram / Facebook):"
     )
-    await message.answer(guideline_text, parse_mode="Markdown", reply_markup=cancel_keyboard)
+    await message.answer(guideline_text, reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
 URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com|facebook\.com|fb\.watch)/.+)"
@@ -268,7 +267,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await message.answer("❌ الرابط غير صالح! أرسل رابط صحيح أو اضغط على زر الإلغاء أدناه:", reply_markup=cancel_keyboard)
         return
     await state.update_data(video_url=text)
-    await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالية للمقطع (أرقام فقط):", reply_markup=cancel_keyboard)
+    await message.answer("📊 ممتاز! الآن أرسل عدد المشاهدات الحالية للمقطع (أرقام فقط):", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_views)
 
 @dp.message(Form.waiting_for_views)
@@ -315,24 +314,3 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     rows = cursor.fetchall()
     
     cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-    stats = cursor.fetchone()
-    conn.close()
-    
-    v_count, total_views = stats[0] or 0, stats[1] or 0
-    if not rows:
-        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month} حتى الآن.", reply_markup=main_keyboard)
-        return
-
-    res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
-    for idx, row in enumerate(rows, 1):
-        res += f"{idx}. {row[0]}\n👁 المشاهدات: **{row[1]:,}**\n🗓 {row[2]}\n\n"
-    res += f"━━━━━━━━━━━━━━━━━━━\n📈 **إجمالي المشاهدات:** {total_views:,}\n📹 **عدد الفيديوهات:** {v_count}\n🎖 **رتبتك الحالية:** {calculate_rank(total_views, v_count)}"
-    await message.answer(res, disable_web_page_preview=True, parse_mode="Markdown", reply_markup=main_keyboard)
-
-@dp.message(F.text == "👤 حسابي المعرّف")
-async def show_my_account(message: types.Message, state: FSMContext):
-    await state.clear()
-    telegram_id = message.from_user.id
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id =
