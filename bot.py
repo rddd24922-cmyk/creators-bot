@@ -268,3 +268,83 @@ async def search_user_stats(message: types.Message, state: FSMContext):
         for idx, sub in enumerate(submissions, 1):
             report += f"{idx}. {sub[0]}\n   👁 المشاهدات: **{sub[1]:,}** | 🗓 {sub[2]}\n\n"
     else:
+        report += "لم يقم برفع أي مقاطع لهذا الشهر حتى الآن."
+    await message.answer(report, parse_mode="Markdown", disable_web_page_preview=True)
+
+@dp.message(Command("myid"))
+async def get_group_id(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(f"🆔 معرف المحادثة (Chat ID): `{message.chat.id}`\n🆔 معرف حسابك (Telegram ID): `{message.from_user.id}`", parse_mode="Markdown")
+
+@dp.message(Command("admin_stats"))
+async def admin_stats_handler(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    current_month = datetime.now().strftime("%Y-%m")
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT u.game_id, COUNT(s.id), SUM(s.views)
+        FROM users u
+        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ?
+        GROUP BY u.telegram_id
+    """, (current_month,))
+    creators = cursor.fetchall()
+    conn.close()
+    if not creators:
+        await message.answer(f"📊 لا توجد أي بيانات مسجلة لصناع المحتوى لشهر {current_month} حتى الآن.")
+        return
+    text = f"👑 **تقرير رتب وإحصائيات صناع المحتوى لشهر {current_month}:**\n\n"
+    for idx, c in enumerate(creators, 1):
+        v_count, v_views = c[1] or 0, c[2] or 0
+        text += f"{idx}. 🎮 Game ID: `{c[0]}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {calculate_rank(v_views, v_count)}\n\n"
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("admin_summary"))
+async def admin_summary_handler(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    current_month = datetime.now().strftime("%Y-%m")
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(views), COUNT(id) FROM submissions WHERE submission_month = ?", (current_month,))
+    total_stats = cursor.fetchone()
+    total_views = total_stats[0] or 0
+    total_videos = total_stats[1] or 0
+    cursor.execute("""
+        SELECT u.game_id, SUM(s.views) as total_v, COUNT(s.id) as v_count
+        FROM users u
+        JOIN submissions s ON u.telegram_id = s.telegram_id
+        WHERE s.submission_month = ?
+        GROUP BY u.telegram_id
+        ORDER BY total_v DESC
+        LIMIT 10
+    """, (current_month,))
+    top_creators = cursor.fetchall()
+    conn.close()
+    summary_text = f"📈 **ملخص المشاهدات العام لشهر {current_month}:**\n"
+    summary_text += f"• إجمالي المشاهدات لكل المقاطع: **{total_views:,}** 👁\n"
+    summary_text += f"• إجمالي عدد المقاطع المرفوعة: **{total_videos}** 📹\n"
+    summary_text += f"━━━━━━━━━━━━━━━━━━━\n"
+    summary_text += f"🏆 **أفضل صناع المحتوى (أعلى مشاهدات):**\n\n"
+    if not top_creators:
+        summary_text += "لا توجد أي مشاهدات مسجلة حتى الآن."
+    else:
+        for idx, creator in enumerate(top_creators, 1):
+            summary_text += f"{idx}. Game ID: `{creator[0]}`\n   👁 المشاهدات: **{creator[1]:,}** | 📹 المقاطع: {creator[2]}\n\n"
+    await message.answer(summary_text, parse_mode="Markdown")
+
+@dp.message(F.text.contains("مقاطعي هذا الشهر"))
+async def show_my_submissions(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    telegram_id = message.from_user.id
+    current_month = datetime.now().strftime("%Y-%m")
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    rows = cursor.fetchall()
+    cursor.execute("SELECT COUNT(*), SUM(views)
