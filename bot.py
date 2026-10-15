@@ -11,7 +11,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-TOKEN = "8502001864:AAELveqvlhwTlGvpmqcrrtZhlFScsOgi6iY"
+import os
+
+TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
 MAX_VIDEOS_PER_MONTH = 60
 
