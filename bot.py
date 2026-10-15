@@ -15,7 +15,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
 MAX_VIDEOS_PER_MONTH = 60
 
-# تمت إضافة رقمك التعريفي (556767982) ومجموعة الإدارة لصلاحيات كاملة فورية
 ADMIN_IDS = [ADMIN_GROUP_ID, 556767982]
 
 logging.basicConfig(level=logging.INFO)
@@ -176,15 +175,12 @@ async def allow_user(message: types.Message, state: FSMContext):
     await state.clear()
     if message.from_user.id not in ADMIN_IDS:
         return
-    
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
         await message.answer("⚠️ **طريقة الاستخدام:**\n`/allow 123456789`", parse_mode="Markdown")
         return
-        
     target_id = int(args[1].strip())
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
     try:
@@ -216,20 +212,16 @@ async def unallow_user(message: types.Message, state: FSMContext):
 @dp.message(Command("cancel", "reset", "fix", "start"))
 async def global_commands_handler(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
-    
     if not is_allowed(telegram_id):
         await message.answer("⛔ **عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.**", parse_mode="Markdown")
         return
-        
     await state.clear()
-    
     if message.text and message.text.startswith("/start"):
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
         cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
         user = cursor.fetchone()
         conn.close()
-        
         if user:
             await message.answer(f"أهلاً بك مجدداً يا بطل أرض الشجعان! 🎬\nمعرّفك المسجل بحسابك: `{user[0]}`", reply_markup=main_keyboard, parse_mode="Markdown")
         else:
@@ -247,74 +239,32 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     if len(args) < 2:
         await message.answer("⚠️ **طريقة الاستخدام الصحيحة:**\nأرسل الأمر متبوعاً بمعرّف اللاعب (Game ID)، مثال:\n`/user 123456`", parse_mode="Markdown")
         return
-    
     target_game_id = args[1].strip()
     current_month = datetime.now().strftime("%Y-%m")
-    
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
     cursor.execute("SELECT telegram_id, registered_at FROM users WHERE game_id = ?", (target_game_id,))
     user_info = cursor.fetchone()
-    
     if not user_info:
         conn.close()
         await message.answer(f"❌ لم يتم العثور على أي صانع محتوى مسجل بمعرّف اللعبة: `{target_game_id}`", parse_mode="Markdown")
         return
-        
     telegram_id = user_info[0]
     cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
     submissions = cursor.fetchall()
-    
     cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
     stats = cursor.fetchone()
     conn.close()
-    
     v_count, total_views = stats[0] or 0, stats[1] or 0
     rank = calculate_rank(total_views, v_count)
-    
     report = f"👤 **تقرير إنجازات صانع المحتوى ({target_game_id}):**\n"
     report += f"🎮 Game ID: `{target_game_id}`\n"
     report += f"📈 مشاهدات هذا الشهر ({current_month}): **{total_views:,}** 👁\n"
     report += f"📹 عدد المقاطع المرفوعة: **{v_count}**\n"
     report += f"🎖 الرتبة المستحقة: **{rank}**\n"
     report += f"━━━━━━━━━━━━━━━━━━━\n"
-    
     if submissions:
         report += "🎬 **سجل المقاطع المرفوعة:**\n\n"
         for idx, sub in enumerate(submissions, 1):
             report += f"{idx}. {sub[0]}\n   👁 المشاهدات: **{sub[1]:,}** | 🗓 {sub[2]}\n\n"
     else:
-        report += "لم يقم برفع أي مقاطع لهذا الشهر حتى الآن."
-
-    await message.answer(report, parse_mode="Markdown", disable_web_page_preview=True)
-
-@dp.message(Command("myid"))
-async def get_group_id(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer(f"🆔 معرف المحادثة (Chat ID): `{message.chat.id}`\n🆔 معرف حسابك (Telegram ID): `{message.from_user.id}`", parse_mode="Markdown")
-
-@dp.message(Command("admin_stats"))
-async def admin_stats_handler(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    await state.clear()
-    current_month = datetime.now().strftime("%Y-%m")
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT u.game_id, COUNT(s.id), SUM(s.views)
-        FROM users u
-        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ?
-        GROUP BY u.telegram_id
-    """, (current_month,))
-    creators = cursor.fetchall()
-    conn.close()
-    
-    if not creators:
-        await message.answer(f"📊 لا توجد أي بيانات مسجلة لصناع المحتوى لشهر {current_month} حتى الآن.")
-        return
-
-    text = f"👑 **تقرير رتب وإحصائيات صناع المحتوى لشهر {current_month}:**\n\n"
-    for idx, c in enumerate(creators, 1):
-        v_count, v_views = c[1] or 0, c[2] or 0
-        text += f"{idx}.
