@@ -11,7 +11,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-# ================= إعدادات البوت =================
 TOKEN = "8502001864:AAG9DfNx1s_U3tSpMXaUVsTF2WGAhIklLjk"
 ADMIN_GROUP_ID = -1003968149974
 MAX_VIDEOS_PER_MONTH = 60
@@ -21,17 +20,13 @@ bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ================= التثبيت المتقدم لقاعدة البيانات =================
 def get_db_path():
-    # استخدام المسار المحلي المباشر لضمان حفظ الملف
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_dir, "creators_bot.db")
 
 def init_db():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
-    
-    # جدول المستخدمين: حفظ دائِم
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             telegram_id INTEGER PRIMARY KEY,
@@ -39,8 +34,6 @@ def init_db():
             registered_at TEXT
         )
     """)
-    
-    # جدول المقاطع
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,7 +62,6 @@ class Form(StatesGroup):
     waiting_for_video_url = State()
     waiting_for_views = State()
 
-# ================= حساب الرتب =================
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
         return "👑 إمبراطور (مكافأة 24,000 صدفة + تأهل لجائزة طماطم بلس)"
@@ -94,7 +86,6 @@ def calculate_rank(views, videos_count):
     else:
         return "📌 مرشح (لم يستوفِ الحد الأدنى من شروط الرتب)"
 
-# ================= لوحات الأزرار =================
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📤 إرسال مقطع جديد")],
@@ -110,7 +101,6 @@ cancel_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ================= المجدول اليومي =================
 async def daily_report_scheduler():
     while True:
         clean_old_submissions()
@@ -162,7 +152,6 @@ async def daily_report_scheduler():
                     
         await asyncio.sleep(60)
 
-# ================= معالجات الأوامر الرئيسية والإلغاء =================
 @dp.message(F.text == "❌ إلغاء / كنسل")
 @dp.message(Command("cancel", "reset", "fix"))
 async def cancel_handler(message: types.Message, state: FSMContext):
@@ -294,7 +283,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer("أهلاً بك في بوت برنامج صناع المحتوى (أرض الشجعان)! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_game_id)
 
-# ================= معالجة إدخال المعرّف حصرياً =================
 @dp.message(Form.waiting_for_game_id)
 async def process_game_id(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
@@ -325,7 +313,6 @@ async def process_game_id(message: types.Message, state: FSMContext):
     finally:
         conn.close()
 
-# ================= معالجة إرسال المقاطع والمشاهدات =================
 @dp.message(F.text == "📤 إرسال مقطع جديد")
 async def start_submission(message: types.Message, state: FSMContext):
     await state.clear()
@@ -358,15 +345,21 @@ async def start_submission(message: types.Message, state: FSMContext):
     await message.answer(guideline_text, parse_mode="Markdown", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
-URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com|facebook\.com|fb\.watch)/.+)"
+# تعبير نمطي شامل يدعم كافة صيغ وروابط يوتيوب وتيك توك ومنصات التواصل بملحقاتها
+URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com|facebook\.com|fb\.watch)/\S+)"
 
 @dp.message(Form.waiting_for_video_url)
 async def process_video_url(message: types.Message, state: FSMContext):
     text = message.text.strip()
-    if not re.match(URL_PATTERN, text):
-        await message.answer("❌ الرابط غير صالح! أرسل رابط صحيح أو اضغط على زر الإلغاء أدناه:", reply_markup=cancel_keyboard)
+    if not re.search(URL_PATTERN, text):
+        await message.answer("❌ الرابط غير صالح! يرجى إرسال رابط صحيح (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
         return
-    await state.update_data(video_url=text)
+    
+    # استخراج الرابط النظيف من الرسالة
+    match = re.search(URL_PATTERN, text)
+    clean_url = match.group(0) if match else text
+    
+    await state.update_data(video_url=clean_url)
     await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالية للمقطع (أرقام فقط):", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_views)
 
