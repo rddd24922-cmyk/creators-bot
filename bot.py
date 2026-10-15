@@ -380,10 +380,11 @@ async def process_update_game_id(message: types.Message, state: FSMContext):
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
     try:
+        # هنا يتم تحديث المعرف فقط (UPDATE) دون المساس بجدول المقاطع (submissions) أو حذفها
         cursor.execute("UPDATE users SET game_id = ? WHERE telegram_id = ?", (new_game_id, telegram_id))
         conn.commit()
         await state.clear()
-        await message.answer(f"✅ تم تحديث وتعديل معرّف اللعبة إلى: `{new_game_id}` بنجاح!", reply_markup=main_keyboard, parse_mode="Markdown")
+        await message.answer(f"✅ تم تحديث وتعديل معرّف اللعبة إلى: `{new_game_id}` بنجاح مع الاحتفاظ بكافة مقاطعك ومشاهداتك السابقة!", reply_markup=main_keyboard, parse_mode="Markdown")
     except sqlite3.IntegrityError:
         await message.answer("❌ **عذراً، هذا المعرّف مستخدم مسبقاً من قِبل صانع محتوى آخر!**", reply_markup=main_keyboard, parse_mode="Markdown")
         await state.clear()
