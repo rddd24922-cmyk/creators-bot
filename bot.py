@@ -291,47 +291,4 @@ async def admin_summary_handler(message: types.Message, state: FSMContext):
         return
     await state.clear()
     current_month = datetime.now().strftime("%Y-%m")
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT SUM(views), COUNT(id) FROM submissions WHERE submission_month = ?", (current_month,))
-    total_stats = cursor.fetchone()
-    total_views = total_stats[0] or 0
-    total_videos = total_stats[1] or 0
-    cursor.execute("SELECT u.game_id, SUM(s.views) as total_v, COUNT(s.id) as v_count FROM users u JOIN submissions s ON u.telegram_id = s.telegram_id WHERE s.submission_month = ? GROUP BY u.telegram_id ORDER BY total_v DESC LIMIT 10", (current_month,))
-    top_creators = cursor.fetchall()
-    conn.close()
-    summary_text = f"📈 الملخص العام لشهر {current_month}:\nإجمالي المشاهدات: {total_views:,}\nإجمالي الفيديوهات: {total_videos}\n\n🏆 أفضل صناع المحتوى:\n"
-    if not top_creators:
-        summary_text += "لا توجد مشاهدات مسجلة."
-    else:
-        for idx, creator in enumerate(top_creators, 1):
-            summary_text += f"{idx}. Game ID: {creator[0]} - المشاهدات: {creator[1]:,}\n"
-    await message.answer(summary_text)
-
-@dp.message(F.text.contains("مقاطعي هذا الشهر"))
-async def show_my_submissions(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    await state.clear()
-    telegram_id = message.from_user.id
-    current_month = datetime.now().strftime("%Y-%m")
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-    rows = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-    stats = cursor.fetchone()
-    conn.close()
-    v_count, total_views = stats[0] or 0, stats[1] or 0
-    if not rows:
-        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month}.", reply_markup=main_keyboard)
-        return
-    res = f"🎬 مقاطعك المسجلة لشهر {current_month}:\n\n"
-    for idx, row in enumerate(rows, 1):
-        res += f"{idx}. {row[0]}\nالمشاهدات: {row[1]:,} | {row[2]}\n\n"
-    res += f"إجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nرتبتك الحالية: {calculate_rank(total_views, v_count)}"
-    await message.answer(res, disable_web_page_preview=True, reply_markup=main_keyboard)
-
-@dp.message(F.text.contains("حسابي المعرّف"))
-async def show_my_account(message: types.Message, state: FSMContext):
-    if not is_allowed(message.
+    conn = sqlite3.connect
