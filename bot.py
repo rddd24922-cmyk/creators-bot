@@ -226,27 +226,4 @@ async def admin_summary_handler(message: types.Message, state: FSMContext):
 
     await message.answer(summary_text, parse_mode="Markdown")
 
-@dp.message(F.text == "📊 مقاطعي هذا الشهر")
-async def show_my_submissions(message: types.Message, state: FSMContext):
-    await state.clear()
-    telegram_id = message.from_user.id
-    current_month = datetime.now().strftime("%Y-%m")
-    
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-    rows = cursor.fetchall()
-    
-    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-    stats = cursor.fetchone()
-    conn.close()
-    
-    v_count, total_views = stats[0] or 0, stats[1] or 0
-    if not rows:
-        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month} حتى الآن.", reply_markup=main_keyboard)
-        return
-
-    res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
-    for idx, row in enumerate(rows, 1):
-        res += f"{idx}. {row[0]}\n👁 المشاهدات: **{row[1]:,}**\n🗓 {row[2]}\n\n"
-    res += f"━━━━━━━━━━━━━━━━━━━\n📈 **إجمالي
+@dp.message(F.text == "📊 مقاط
