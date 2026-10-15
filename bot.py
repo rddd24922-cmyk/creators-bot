@@ -152,7 +152,6 @@ async def daily_report_scheduler():
                     
         await asyncio.sleep(60)
 
-# أمر الاستعلام عن إنجازات صانع محتوى معين بواسطة Game ID
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
     await state.clear()
@@ -408,4 +407,18 @@ async def process_video_url(message: types.Message, state: FSMContext):
     clean_url = match.group(0) if match else text
     
     await state.update_data(video_url=clean_url)
-    await message.
+    await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالية للمقطع (أرقام فقط):", reply_markup=cancel_keyboard)
+    await state.set_state(Form.waiting_for_views)
+
+@dp.message(Form.waiting_for_views)
+async def process_video_views(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط للمشاهدات أو اضغط على زر الإلغاء أدناه:", reply_markup=cancel_keyboard)
+        return
+
+    views = int(text)
+    data = await state.get_data()
+    video_url = data.get("video_url")
+    telegram_id = message.from_user.id
+    current_month = datetime.now().strftime("%Y-%m")
