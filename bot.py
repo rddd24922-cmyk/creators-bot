@@ -11,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+# ================= إعدادات البوت =================
 TOKEN = "8502001864:AAG9DfNx1s_U3tSpMXaUVsTF2WGAhIklLjk"
 ADMIN_GROUP_ID = -1003968149974
 MAX_VIDEOS_PER_MONTH = 60
@@ -20,12 +21,17 @@ bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
+# ================= التثبيت المتقدم لقاعدة البيانات =================
 def get_db_path():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "creators_bot.db")
+    # استخدام المسار المحلي المباشر لضمان حفظ الملف
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, "creators_bot.db")
 
 def init_db():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
+    
+    # جدول المستخدمين: حفظ دائِم
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             telegram_id INTEGER PRIMARY KEY,
@@ -33,6 +39,8 @@ def init_db():
             registered_at TEXT
         )
     """)
+    
+    # جدول المقاطع
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,30 +69,32 @@ class Form(StatesGroup):
     waiting_for_video_url = State()
     waiting_for_views = State()
 
+# ================= حساب الرتب =================
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
-        return "👑 إمبراطور (مكافأة 24,000 صدفة + تأهل لجائزة طماطم بلس)[span_1](start_span)"[span_1](end_span)
+        return "👑 إمبراطور (مكافأة 24,000 صدفة + تأهل لجائزة طماطم بلس)"
     elif views >= 1000000 and videos_count >= 20:
-        return "💎 أيقونة (مكافأة 20,000 صدفة)[span_2](start_span)"[span_2](end_span)
+        return "💎 أيقونة (مكافأة 20,000 صدفة)"
     elif views >= 500000 and videos_count >= 20:
-        return "🏆 أسطورة (مكافأة 16,000 صدفة)[span_3](start_span)"[span_3](end_span)
+        return "🏆 أسطورة (مكافأة 16,000 صدفة)"
     elif views >= 100000 and videos_count >= 20:
-        return "⚡ سلطان (مكافأة 13,000 صدفة)[span_4](start_span)"[span_4](end_span)
+        return "⚡ سلطان (مكافأة 13,000 صدفة)"
     elif views >= 50000 and videos_count >= 20:
-        return "🔥 زعيم (مكافأة 9,000 صدفة)[span_5](start_span)"[span_5](end_span)
+        return "🔥 زعيم (مكافأة 9,000 صدفة)"
     elif views >= 15000 and videos_count >= 15:
-        return "🎖 قائد (مكافأة 6,000 صدفة)[span_6](start_span)[span_7](start_span)"[span_6](end_span)[span_7](end_span)
+        return "🎖 قائد (مكافأة 6,000 صدفة)"
     elif views >= 5000 and videos_count >= 12:
-        return "⭐ فارس (مكافأة 3,500 صدفة)[span_8](start_span)[span_9](start_span)"[span_8](end_span)[span_9](end_span)
+        return "⭐ فارس (مكافأة 3,500 صدفة)"
     elif views >= 1500 and videos_count >= 8:
-        return "⚔️ محارب (مكافأة 2,000 صدفة)[span_10](start_span)[span_11](start_span)"[span_10](end_span)[span_11](end_span)
+        return "⚔️ محارب (مكافأة 2,000 صدفة)"
     elif views >= 150 and videos_count >= 5:
-        return "🛡️ مجند (مكافأة 800 صدفة)[span_12](start_span)[span_13](start_span)"[span_12](end_span)[span_13](end_span)
+        return "🛡️ مجند (مكافأة 800 صدفة)"
     elif views >= 50 and videos_count >= 1:
-        return "🌱 مبتدئ (مكافأة 200 صدفة)[span_14](start_span)[span_15](start_span)"[span_14](end_span)[span_15](end_span)
+        return "🌱 مبتدئ (مكافأة 200 صدفة)"
     else:
         return "📌 مرشح (لم يستوفِ الحد الأدنى من شروط الرتب)"
 
+# ================= لوحات الأزرار =================
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📤 إرسال مقطع جديد")],
@@ -100,6 +110,7 @@ cancel_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# ================= المجدول اليومي =================
 async def daily_report_scheduler():
     while True:
         clean_old_submissions()
@@ -151,6 +162,7 @@ async def daily_report_scheduler():
                     
         await asyncio.sleep(60)
 
+# ================= معالجات الأوامر الرئيسية والإلغاء =================
 @dp.message(F.text == "❌ إلغاء / كنسل")
 @dp.message(Command("cancel", "reset", "fix"))
 async def cancel_handler(message: types.Message, state: FSMContext):
@@ -225,6 +237,47 @@ async def admin_summary_handler(message: types.Message, state: FSMContext):
 
     await message.answer(summary_text, parse_mode="Markdown")
 
+@dp.message(F.text == "📊 مقاطعي هذا الشهر")
+async def show_my_submissions(message: types.Message, state: FSMContext):
+    await state.clear()
+    telegram_id = message.from_user.id
+    current_month = datetime.now().strftime("%Y-%m")
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    rows = cursor.fetchall()
+    
+    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    stats = cursor.fetchone()
+    conn.close()
+    
+    v_count, total_views = stats[0] or 0, stats[1] or 0
+    if not rows:
+        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month} حتى الآن.", reply_markup=main_keyboard)
+        return
+
+    res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
+    for idx, row in enumerate(rows, 1):
+        res += f"{idx}. {row[0]}\n👁 المشاهدات: **{row[1]:,}**\n🗓 {row[2]}\n\n"
+    res += f"━━━━━━━━━━━━━━━━━━━\n📈 **إجمالي المشاهدات:** {total_views:,}\n📹 **عدد الفيديوهات:** {v_count}\n🎖 **رتبتك الحالية:** {calculate_rank(total_views, v_count)}"
+    await message.answer(res, disable_web_page_preview=True, parse_mode="Markdown", reply_markup=main_keyboard)
+
+@dp.message(F.text == "👤 حسابي المعرّف")
+async def show_my_account(message: types.Message, state: FSMContext):
+    await state.clear()
+    telegram_id = message.from_user.id
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+    user = cursor.fetchone()
+    conn.close()
+    
+    if user:
+        await message.answer(f"معرّف اللعبة المسجل بحسابك هو: `{user[0]}`", parse_mode="Markdown", reply_markup=main_keyboard)
+    else:
+        await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -241,6 +294,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer("أهلاً بك في بوت برنامج صناع المحتوى (أرض الشجعان)! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_game_id)
 
+# ================= معالجة إدخال المعرّف حصرياً =================
 @dp.message(Form.waiting_for_game_id)
 async def process_game_id(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
@@ -271,6 +325,7 @@ async def process_game_id(message: types.Message, state: FSMContext):
     finally:
         conn.close()
 
+# ================= معالجة إرسال المقاطع والمشاهدات =================
 @dp.message(F.text == "📤 إرسال مقطع جديد")
 async def start_submission(message: types.Message, state: FSMContext):
     await state.clear()
@@ -282,8 +337,7 @@ async def start_submission(message: types.Message, state: FSMContext):
     
     if not user:
         conn.close()
-        await message.answer("⚠️ أنت غير مسجل في النظام! أرسل معرّف اللعبة (Game ID) الخاص بك الآن لربط حسابك:", reply_markup=cancel_keyboard)
-        await state.set_state(Form.waiting_for_game_id)
+        await message.answer("⚠️ أنت غير مسجل في النظام! أرسل /start أولاً لربط حسابك بمعرّف اللعبة.", reply_markup=main_keyboard)
         return
 
     current_month = datetime.now().strftime("%Y-%m")
@@ -347,47 +401,6 @@ async def process_video_views(message: types.Message, state: FSMContext):
         await state.clear()
     finally:
         conn.close()
-
-@dp.message(F.text == "📊 مقاطعي هذا الشهر")
-async def show_my_submissions(message: types.Message, state: FSMContext):
-    await state.clear()
-    telegram_id = message.from_user.id
-    current_month = datetime.now().strftime("%Y-%m")
-    
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-    rows = cursor.fetchall()
-    
-    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-    stats = cursor.fetchone()
-    conn.close()
-    
-    v_count, total_views = stats[0] or 0, stats[1] or 0
-    if not rows:
-        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month} حتى الآن.", reply_markup=main_keyboard)
-        return
-
-    res = f"🎬 **مقاطعك المسجلة لشهر {current_month}:**\n\n"
-    for idx, row in enumerate(rows, 1):
-        res += f"{idx}. {row[0]}\n👁 المشاهدات: **{row[1]:,}**\n🗓 {row[2]}\n\n"
-    res += f"━━━━━━━━━━━━━━━━━━━\n📈 **إجمالي المشاهدات:** {total_views:,}\n📹 **عدد الفيديوهات:** {v_count}\n🎖 **رتبتك الحالية:** {calculate_rank(total_views, v_count)}"
-    await message.answer(res, disable_web_page_preview=True, parse_mode="Markdown", reply_markup=main_keyboard)
-
-@dp.message(F.text == "👤 حسابي المعرّف")
-async def show_my_account(message: types.Message, state: FSMContext):
-    await state.clear()
-    telegram_id = message.from_user.id
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
-    user = cursor.fetchone()
-    conn.close()
-    
-    if user:
-        await message.answer(f"معرّف اللعبة المسجل بحسابك هو: `{user[0]}`", parse_mode="Markdown", reply_markup=main_keyboard)
-    else:
-        await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
 
 async def main():
     asyncio.create_task(daily_report_scheduler())
