@@ -143,6 +143,11 @@ async def daily_report_scheduler():
                     await bot.send_message(ADMIN_GROUP_ID, report_text, parse_mode="Markdown", disable_web_page_preview=True)
                 except Exception as e:
                     logging.error(f"Failed to send daily report: {e}")
+            else:
+                try:
+                    await bot.send_message(ADMIN_GROUP_ID, f"📊 **التقرير اليومي ({today_date}):**\nلم يتم تسجيل أي مقاطع جديدة اليوم.", parse_mode="Markdown")
+                except Exception as e:
+                    logging.error(f"Failed to send empty report: {e}")
                     
         await asyncio.sleep(60)
 
@@ -198,31 +203,20 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer("أهلاً بك في بوت برنامج صناع المحتوى (أرض الشجعان)! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_game_id)
 
+# معالجة إدخال المعرّف فقط عندما يكون البوت في حالة انتظار المعرّف
 @dp.message(Form.waiting_for_game_id)
-@dp.message(F.text.isdigit())
 async def process_game_id(message: types.Message, state: FSMContext):
-    # تجاهل إذا كانت رسالة نصية لأزرار أخرى
-    if message.text in ["📤 إرسال مقطع جديد", "📊 مقاطعي هذا الشهر", "👤 حسابي المعرّف"]:
-        return
-
     telegram_id = message.from_user.id
     game_id = message.text.strip()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
-    existing_user = cursor.fetchone()
-    
-    if existing_user:
-        conn.close()
-        await state.clear()
-        if existing_user[0] == game_id:
-            await message.answer(f"✅ هذا هو معرّفك المسجل حالياً: `{game_id}`", reply_markup=main_keyboard, parse_mode="Markdown")
-        else:
-            await message.answer(f"⚠️ حسابك مرتبط مسبقاً بمعرّف: `{existing_user[0]}`.", reply_markup=main_keyboard, parse_mode="Markdown")
+    if not game_id.isdigit():
+        await message.answer("❌ يرجى إرسال معرّف لاعب صحيح يتكون من أرقام فقط:", reply_markup=cancel_keyboard)
         return
 
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    
     try:
         cursor.execute("INSERT INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)", (telegram_id, game_id, now))
         conn.commit()
@@ -356,7 +350,7 @@ async def show_my_account(message: types.Message, state: FSMContext):
     if user:
         await message.answer(f"معرّف اللعبة المسجل بحسابك هو: `{user[0]}`", parse_mode="Markdown", reply_markup=main_keyboard)
     else:
-        await message.answer("غير مسجل لدينا، يرجى إرسال المعرّف الخاص بك الآن لتسجيله تلقائياً أو إرسال /start.", reply_markup=cancel_keyboard)
+        await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
 
 async def main():
     asyncio.create_task(daily_report_scheduler())
