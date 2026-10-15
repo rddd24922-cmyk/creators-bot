@@ -63,25 +63,25 @@ class Form(StatesGroup):
 
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
-        return "👑 إمبراطور (مكافأة 24,000 صدفة + تأهل لجائزة طماطم بلس)"
+        return "👑 إمبراطور (مكافأة 24,000 صدفة + تأهل لجائزة طماطم بلس)[span_1](start_span)"[span_1](end_span)
     elif views >= 1000000 and videos_count >= 20:
-        return "💎 أيقونة (مكافأة 20,000 صدفة)"
+        return "💎 أيقونة (مكافأة 20,000 صدفة)[span_2](start_span)"[span_2](end_span)
     elif views >= 500000 and videos_count >= 20:
-        return "🏆 أسطورة (مكافأة 16,000 صدفة)"
+        return "🏆 أسطورة (مكافأة 16,000 صدفة)[span_3](start_span)"[span_3](end_span)
     elif views >= 100000 and videos_count >= 20:
-        return "⚡ سلطان (مكافأة 13,000 صدفة)"
+        return "⚡ سلطان (مكافأة 13,000 صدفة)[span_4](start_span)"[span_4](end_span)
     elif views >= 50000 and videos_count >= 20:
-        return "🔥 زعيم (مكافأة 9,000 صدفة)"
+        return "🔥 زعيم (مكافأة 9,000 صدفة)[span_5](start_span)"[span_5](end_span)
     elif views >= 15000 and videos_count >= 15:
-        return "🎖 قائد (مكافأة 6,000 صدفة)"
+        return "🎖 قائد (مكافأة 6,000 صدفة)[span_6](start_span)[span_7](start_span)"[span_6](end_span)[span_7](end_span)
     elif views >= 5000 and videos_count >= 12:
-        return "⭐ فارس (مكافأة 3,500 صدفة)"
+        return "⭐ فارس (مكافأة 3,500 صدفة)[span_8](start_span)[span_9](start_span)"[span_8](end_span)[span_9](end_span)
     elif views >= 1500 and videos_count >= 8:
-        return "⚔️ محارب (مكافأة 2,000 صدفة)"
+        return "⚔️ محارب (مكافأة 2,000 صدفة)[span_10](start_span)[span_11](start_span)"[span_10](end_span)[span_11](end_span)
     elif views >= 150 and videos_count >= 5:
-        return "🛡️ مجند (مكافأة 800 صدفة)"
+        return "🛡️ مجند (مكافأة 800 صدفة)[span_12](start_span)[span_13](start_span)"[span_12](end_span)[span_13](end_span)
     elif views >= 50 and videos_count >= 1:
-        return "🌱 مبتدئ (مكافأة 200 صدفة)"
+        return "🌱 مبتدئ (مكافأة 200 صدفة)[span_14](start_span)[span_15](start_span)"[span_14](end_span)[span_15](end_span)
     else:
         return "📌 مرشح (لم يستوفِ الحد الأدنى من شروط الرتب)"
 
@@ -187,6 +187,44 @@ async def admin_stats_handler(message: types.Message, state: FSMContext):
         text += f"{idx}. 🎮 Game ID: `{c[0]}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {calculate_rank(v_views, v_count)}\n\n"
     await message.answer(text, parse_mode="Markdown")
 
+@dp.message(Command("admin_summary"))
+async def admin_summary_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    current_month = datetime.now().strftime("%Y-%m")
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(views), COUNT(id) FROM submissions WHERE submission_month = ?", (current_month,))
+    total_stats = cursor.fetchone()
+    total_views = total_stats[0] or 0
+    total_videos = total_stats[1] or 0
+    
+    cursor.execute("""
+        SELECT u.game_id, SUM(s.views) as total_v, COUNT(s.id) as v_count
+        FROM users u
+        JOIN submissions s ON u.telegram_id = s.telegram_id
+        WHERE s.submission_month = ?
+        GROUP BY u.telegram_id
+        ORDER BY total_v DESC
+        LIMIT 10
+    """, (current_month,))
+    top_creators = cursor.fetchall()
+    conn.close()
+
+    summary_text = f"📈 **ملخص المشاهدات العام لشهر {current_month}:**\n"
+    summary_text += f"• إجمالي المشاهدات لكل المقاطع: **{total_views:,}** 👁\n"
+    summary_text += f"• إجمالي عدد المقاطع المرفوعة: **{total_videos}** 📹\n"
+    summary_text += f"━━━━━━━━━━━━━━━━━━━\n"
+    summary_text += f"🏆 **أفضل صناع المحتوى (أعلى مشاهدات):**\n\n"
+
+    if not top_creators:
+        summary_text += "لا توجد أي مشاهدات مسجلة حتى الآن."
+    else:
+        for idx, creator in enumerate(top_creators, 1):
+            summary_text += f"{idx}. Game ID: `{creator[0]}`\n   👁 المشاهدات: **{creator[1]:,}** | 📹 المقاطع: {creator[2]}\n\n"
+
+    await message.answer(summary_text, parse_mode="Markdown")
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -203,7 +241,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer("أهلاً بك في بوت برنامج صناع المحتوى (أرض الشجعان)! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_game_id)
 
-# معالجة إدخال المعرّف فقط عندما يكون البوت في حالة انتظار المعرّف
 @dp.message(Form.waiting_for_game_id)
 async def process_game_id(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
