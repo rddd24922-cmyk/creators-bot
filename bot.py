@@ -5,7 +5,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -152,6 +152,29 @@ async def daily_report_scheduler():
                     
         await asyncio.sleep(60)
 
+# معالجة الإلغاء والأوامر العامة لتفكيك أي تعليق فوراً
+@dp.message(F.text.in_({"❌ إلغاء / كنسل", "إلغاء", "كنسل"}))
+@dp.message(Command("cancel", "reset", "fix", "start"))
+async def global_commands_handler(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    await state.clear()
+    
+    if message.text and message.text.startswith("/start"):
+        telegram_id = message.from_user.id
+        conn = sqlite3.connect(get_db_path())
+        cursor = conn.cursor()
+        cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        if user:
+            await message.answer(f"أهلاً بك مجدداً يا بطل أرض الشجعان! 🎬\nمعرّفك المسجل بحسابك: `{user[0]}`", reply_markup=main_keyboard, parse_mode="Markdown")
+        else:
+            await message.answer("أهلاً بك في بوت برنامج صناع المحتوى (أرض الشجعان)! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:", reply_markup=cancel_keyboard, parse_mode="Markdown")
+            await state.set_state(Form.waiting_for_game_id)
+    else:
+        await message.answer("🔄 **تم إلغاء العملية وفك التعليق بنجاح!**", reply_markup=main_keyboard, parse_mode="Markdown")
+
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
     await state.clear()
@@ -199,13 +222,6 @@ async def search_user_stats(message: types.Message, state: FSMContext):
         report += "لم يقم برفع أي مقاطع لهذا الشهر حتى الآن."
 
     await message.answer(report, parse_mode="Markdown", disable_web_page_preview=True)
-
-@dp.message(F.text.contains("إلغاء"))
-@dp.message(F.text.contains("كنسل"))
-@dp.message(Command("cancel", "reset", "fix"))
-async def cancel_handler(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer("🔄 **تم إلغاء العملية وفك التعليق بنجاح!**", reply_markup=main_keyboard, parse_mode="Markdown")
 
 @dp.message(Command("myid"))
 async def get_group_id(message: types.Message, state: FSMContext):
@@ -316,22 +332,6 @@ async def show_my_account(message: types.Message, state: FSMContext):
     else:
         await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
 
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-    telegram_id = message.from_user.id
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
-    user = cursor.fetchone()
-    conn.close()
-    
-    if user:
-        await message.answer(f"أهلاً بك مجدداً يا بطل أرض الشجعان! 🎬\nمعرّفك المسجل بحسابك: `{user[0]}`", reply_markup=main_keyboard, parse_mode="Markdown")
-    else:
-        await message.answer("أهلاً بك في بوت برنامج صناع المحتوى (أرض الشجعان)! 🚀\nيرجى إرسال **معرّف اللاعب (Game ID)** الخاص بك للبدء:", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_game_id)
-
 @dp.message(Form.waiting_for_game_id)
 async def process_game_id(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
@@ -422,3 +422,30 @@ async def process_video_views(message: types.Message, state: FSMContext):
     video_url = data.get("video_url")
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (?, ?, ?, ?, ?)", (telegram_id, video_url, views, current_month, now))
+        conn.commit()
+        
+        cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+        stats = cursor.fetchone()
+        current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
+        
+        await message.answer(f"🎉 تم تسجيل مقطعك بنجاح!\n📈 إجمالي مشاهداتك هذا الشهر: {stats[1]:,}\n🎖 رتبتك الحالية: {current_rank}", reply_markup=main_keyboard)
+        await state.clear()
+    except sqlite3.IntegrityError:
+        await message.answer("⚠️ هذا الرابط تم تسجيله مسبقاً في النظام ولا يمكن تكراره!", reply_markup=main_keyboard)
+        await state.clear()
+    finally:
+        conn.close()
+
+async def main():
+    asyncio.create_task(daily_report_scheduler())
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
