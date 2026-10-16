@@ -68,7 +68,6 @@ def is_allowed(telegram_id: int) -> bool:
     conn.close()
     return res is not None
 
-# فترة الاحتفاظ بالمقاطع والحذف أصبحت كل 50 يوماً
 def clean_old_submissions():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
@@ -123,7 +122,6 @@ cancel_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# نظام الجدولة للتقارير التلقائية (اليومية والشهري الختامي في آخر يوم من الشهر بدقة)
 async def report_scheduler():
     last_monthly_report_month = ""
     while True:
@@ -133,7 +131,6 @@ async def report_scheduler():
         
         last_day_of_month = calendar.monthrange(now.year, now.month)[1]
         
-        # التقرير الشهري التلقائي في آخر يوم من الشهر الساعة 23:30
         if now.day == last_day_of_month and now.hour == 23 and now.minute == 30:
             if last_monthly_report_month != current_month_str:
                 if ADMIN_GROUP_ID != 0:
@@ -162,7 +159,6 @@ async def report_scheduler():
                         except Exception as e:
                             logging.error(f"Failed to send monthly report: {e}")
 
-        # التنبيه المسبق قبل يومين من نهاية الشهر
         if now.day == (last_day_of_month - 2) and now.hour == 12 and now.minute == 0:
             if ADMIN_GROUP_ID != 0:
                 try:
@@ -170,7 +166,6 @@ async def report_scheduler():
                 except Exception as e:
                     logging.error(f"Error: {e}")
 
-        # التقرير اليومي التلقائي
         if now.hour == 23 and now.minute == 59:
             if ADMIN_GROUP_ID != 0:
                 today_date = now.strftime("%Y-%m-%d")
@@ -191,7 +186,6 @@ async def report_scheduler():
                         
         await asyncio.sleep(60)
 
-# أمر التقرير الفوري للمشرفين مع إظهار Telegram ID
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -283,7 +277,6 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
-# أمر /user محمي حصرياً للمشرفين ويعرض Telegram ID
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -407,4 +400,77 @@ async def show_my_account(message: types.Message, state: FSMContext):
     if user:
         await message.answer(f"معرّف اللعبة المسجل بحسابك هو: {user[0]}", reply_markup=main_keyboard)
     else:
-        await message.answer("غير مسجل لدينا، يرجى إ
+        await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
+
+@dp.message(F.text.contains("تعديل المعرّف"))
+async def start_update_game_id(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    telegram_id = message.from_user.id
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user:
+        await message.answer("⚠️ أنت غير مسجل مسبقاً! أرسل /start لتسجيل معرفك لأول مرة.", reply_markup=main_keyboard)
+        return
+        
+    await message.answer(f"معرّفك الحالي هو: `{user[0]}`\n\nيرجى إرسال **معرّف اللعبة (Game ID) الجديد** (أرقام فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
+    await state.set_state(Form.waiting_for_update_game_id)
+
+@dp.message(Form.waiting_for_update_game_id)
+async def process_update_game_id(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    new_game_id = message.text.strip()
+    if not new_game_id.isdigit():
+        await message.answer("❌ يرجى إرسال معرّف صحيح يتكون من أرقام فقط:", reply_markup=cancel_keyboard)
+        return
+        
+    telegram_id = message.from_user.id
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE users SET game_id = ? WHERE telegram_id = ?", (new_game_id, telegram_id))
+        conn.commit()
+        await state.clear()
+        await message.answer(f"✅ تم تحديث وتعديل معرّف اللعبة إلى: `{new_game_id}` بنجاح مع الاحتفاظ بكافة مقاطعك ومشاهداتك السابقة!", reply_markup=main_keyboard, parse_mode="Markdown")
+    except sqlite3.IntegrityError:
+        await message.answer("❌ **عذراً، هذا المعرّف مستخدم مسبقاً من قِبل صانع محتوى آخر!**", reply_markup=main_keyboard, parse_mode="Markdown")
+        await state.clear()
+    finally:
+        conn.close()
+
+@dp.message(Form.waiting_for_game_id)
+async def process_game_id(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    telegram_id = message.from_user.id
+    game_id = message.text.strip()
+    if not game_id.isdigit():
+        await message.answer("يرجى إرسال معرّف لاعب صحيح يتكون من أرقام فقط:", reply_markup=cancel_keyboard)
+        return
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)", (telegram_id, game_id, now))
+        conn.commit()
+        await state.clear()
+        await message.answer(f"تم ربط حسابك بمعرّف اللعبة: {game_id} بنجاح!", reply_markup=main_keyboard)
+    except sqlite3.IntegrityError:
+        cursor.execute("SELECT telegram_id FROM users WHERE game_id = ?", (game_id,))
+        owner = cursor.fetchone()
+        if owner and owner[0] == telegram_id:
+            await state.clear()
+            await message.answer(f"أنت مسجل مسبقاً بهذا المعرّف: {game_id}", reply_markup=main_keyboard)
+        else:
+            await message.answer("عذراً، هذا المعرّف مسجل بحساب صانع محتوى آخر.", reply_markup=main_keyboard)
+            await state.clear()
+    finally:
+        conn.close()
+
+@dp.message(F
