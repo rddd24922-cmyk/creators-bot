@@ -162,4 +162,8 @@ async def report_scheduler():
         if now.day == (last_day_of_month - 2) and now.hour == 12 and now.minute == 0:
             if ADMIN_GROUP_ID != 0:
                 try:
-                    await bot.send_message(ADMIN_GROUP_ID, "⚠️
+                    await bot.send_message(ADMIN_GROUP_ID, "⚠️ تنبيه: بقي يومان على إغلاق استقبال المقاطع ونهاية الشهر.")
+                except Exception as e:
+                    logging.error(f"Error: {e}")
+
+        if now.hour == 23 and now.minute == 
