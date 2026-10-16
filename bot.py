@@ -3,6 +3,7 @@ import re
 import logging
 import os
 import asyncio
+import calendar
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -67,10 +68,11 @@ def is_allowed(telegram_id: int) -> bool:
     conn.close()
     return res is not None
 
+# تم تعديل فترة الاحتفاظ بالمقاطع والحذف لتصبح كل 50 يوماً بناءً على طلبك
 def clean_old_submissions():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
-    expiry_date = (datetime.now() - timedelta(days=33)).strftime("%Y-%m-%d %H:%M:%S")
+    expiry_date = (datetime.now() - timedelta(days=50)).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("DELETE FROM submissions WHERE created_at < ?", (expiry_date,))
     conn.commit()
     conn.close()
@@ -121,48 +123,103 @@ cancel_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-async def daily_report_scheduler():
+# نظام الجدولة للتقارير التلقائية (اليومية والشهري الختامي في آخر يوم من الشهر)
+async def report_scheduler():
+    last_monthly_report_month = ""
     while True:
         clean_old_submissions()
         now = datetime.now()
+        current_month_str = now.strftime("%Y-%m")
         
-        if now.day == 27 and now.hour == 12 and now.minute == 0:
+        last_day_of_month = calendar.monthrange(now.year, now.month)[1]
+        
+        # التقرير الشهري التلقائي في آخر يوم من الشهر الساعة 23:30
+        if now.day == last_day_of_month and now.hour == 23 and now.minute == 30:
+            if last_monthly_report_month != current_month_str:
+                if ADMIN_GROUP_ID != 0:
+                    conn = sqlite3.connect(get_db_path())
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT u.game_id, COUNT(s.id), SUM(s.views)
+                        FROM users u
+                        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ?
+                        GROUP BY u.telegram_id
+                    """, (current_month_str,))
+                    creators = cursor.fetchall()
+                    conn.close()
+                    
+                    if creators:
+                        monthly_text = f"🏆 **التقرير الشهري الختامي لصناع المحتوى (شهر {current_month_str}):**\n\n"
+                        for idx, c in enumerate(creators, 1):
+                            v_count = c[1] or 0
+                            v_views = c[2] or 0
+                            rank = calculate_rank(v_views, v_count)
+                            monthly_text += f"{idx}. 🎮 Game ID: `{c[0]}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {rank}\n\n"
+                        try:
+                            await bot.send_message(ADMIN_GROUP_ID, monthly_text, parse_mode="Markdown")
+                            last_monthly_report_month = current_month_str
+                        except Exception as e:
+                            logging.error(f"Failed to send monthly report: {e}")
+
+        # التنبيه المسبق قبل يومين من نهاية الشهر
+        if now.day == (last_day_of_month - 2) and now.hour == 12 and now.minute == 0:
             if ADMIN_GROUP_ID != 0:
                 try:
-                    await bot.send_message(ADMIN_GROUP_ID, "⚠️ تنبيه: بقي يومان على إغلاق استقبال المقاطع.")
+                    await bot.send_message(ADMIN_GROUP_ID, "⚠️ تنبيه: بقي يومان على إغلاق استقبال المقاطع ونهاية الشهر.")
                 except Exception as e:
                     logging.error(f"Error: {e}")
 
-        target_time = now.replace(hour=23, minute=59, second=0, microsecond=0)
-        if now >= target_time:
-            target_time = target_time.replace(day=target_time.day + 1)
-            
-        wait_seconds = (target_time - datetime.now()).total_seconds()
-        await asyncio.sleep(wait_seconds)
-        
-        if ADMIN_GROUP_ID != 0:
-            today_date = datetime.now().strftime("%Y-%m-%d")
-            conn = sqlite3.connect(get_db_path())
-            cursor = conn.cursor()
-            cursor.execute("SELECT u.game_id, s.video_url, s.views, s.created_at FROM submissions s LEFT JOIN users u ON s.telegram_id = u.telegram_id WHERE DATE(s.created_at) = ?", (today_date,))
-            rows = cursor.fetchall()
-            conn.close()
-            
-            if rows:
-                report_text = f"📊 التقرير اليومي ({today_date}):\n\n"
-                for idx, row in enumerate(rows, 1):
-                    report_text += f"{idx}. Game ID: {row[0] or 'غير معروف'}\nالرابط: {row[1]}\nالمشاهدات: {row[2]:,}\n\n"
-                try:
-                    await bot.send_message(ADMIN_GROUP_ID, report_text, disable_web_page_preview=True)
-                except Exception as e:
-                    logging.error(f"Error: {e}")
-            else:
-                try:
-                    await bot.send_message(ADMIN_GROUP_ID, f"📊 التقرير اليومي ({today_date}): لا توجد مقاطع جديدة.")
-                except Exception as e:
-                    logging.error(f"Error: {e}")
-                    
+        # التقرير اليومي التلقائي
+        if now.hour == 23 and now.minute == 59:
+            if ADMIN_GROUP_ID != 0:
+                today_date = now.strftime("%Y-%m-%d")
+                conn = sqlite3.connect(get_db_path())
+                cursor = conn.cursor()
+                cursor.execute("SELECT u.game_id, s.video_url, s.views, s.created_at FROM submissions s LEFT JOIN users u ON s.telegram_id = u.telegram_id WHERE DATE(s.created_at) = ?", (today_date,))
+                rows = cursor.fetchall()
+                conn.close()
+                
+                if rows:
+                    report_text = f"📊 التقرير اليومي ({today_date}):\n\n"
+                    for idx, row in enumerate(rows, 1):
+                        report_text += f"{idx}. Game ID: {row[0] or 'غير معروف'}\nالرابط: {row[1]}\nالمشاهدات: {row[2]:,}\n\n"
+                    try:
+                        await bot.send_message(ADMIN_GROUP_ID, report_text, disable_web_page_preview=True)
+                    except Exception as e:
+                        logging.error(f"Error: {e}")
+                        
         await asyncio.sleep(60)
+
+# أمر جديد لإرسال تقرير فوري للشهر الحالي للمشرفين
+@dp.message(Command("report"))
+async def send_immediate_report(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    current_month_str = datetime.now().strftime("%Y-%m")
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT u.game_id, COUNT(s.id), SUM(s.views)
+        FROM users u
+        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ?
+        GROUP BY u.telegram_id
+    """, (current_month_str,))
+    creators = cursor.fetchall()
+    conn.close()
+    
+    if not creators:
+        await message.answer(f"⚠️ لا توجد بيانات مسجلة لشهر {current_month_str} حتى الآن.")
+        return
+        
+    report_text = f"⚡ **تقرير فوري لشهر {current_month_str}:**\n\n"
+    for idx, c in enumerate(creators, 1):
+        v_count = c[1] or 0
+        v_views = c[2] or 0
+        rank = calculate_rank(v_views, v_count)
+        report_text += f"{idx}. 🎮 Game ID: `{c[0]}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {rank}\n\n"
+    
+    await message.answer(report_text, parse_mode="Markdown")
 
 @dp.message(Command("allow"))
 async def allow_user(message: types.Message, state: FSMContext):
@@ -380,7 +437,6 @@ async def process_update_game_id(message: types.Message, state: FSMContext):
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
     try:
-        # هنا يتم تحديث المعرف فقط (UPDATE) دون المساس بجدول المقاطع (submissions) أو حذفها
         cursor.execute("UPDATE users SET game_id = ? WHERE telegram_id = ?", (new_game_id, telegram_id))
         conn.commit()
         await state.clear()
@@ -491,7 +547,7 @@ async def process_video_views(message: types.Message, state: FSMContext):
         conn.close()
 
 async def main():
-    asyncio.create_task(daily_report_scheduler())
+    asyncio.create_task(report_scheduler())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
