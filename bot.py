@@ -212,4 +212,4 @@ async def send_immediate_report(message: types.Message, state: FSMContext):
         v_count = c[1] or 0
         v_views = c[2] or 0
         telegram_id = c[3]
-        rank = calculate_rank(
+        rank = calculate_rank() 
