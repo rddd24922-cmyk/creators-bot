@@ -58,11 +58,9 @@ def init_db():
 
 init_db()
 
-# دالة خاصة بالتحقق من المشرفين الأساسيين فقط (لأوامر الإدارة الحصرية)
 def is_admin(telegram_id: int) -> bool:
     return telegram_id in ADMIN_IDS
 
-# دالة التحقق من صناع المحتوى المعتمدين (لإرسال المقاطع)
 def is_allowed(telegram_id: int) -> bool:
     if telegram_id in ADMIN_IDS:
         return True
@@ -191,14 +189,24 @@ async def report_scheduler():
                         
         await asyncio.sleep(60)
 
-# أمر التقرير الفوري (للمشرفين فقط باستخدام is_admin)
+# أمر التقرير الفوري (للمشرفين فقط) - يدعم الآن استعراض أي شهر (مثال: /report 2026-09)
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
-    current_month_str = datetime.now().strftime("%Y-%m")
+    
+    args = message.text.split(maxsplit=1)
+    if len(args) > 1:
+        target_month_str = args[1].strip()
+        # التحقق من صحة صيغة التاريخ (YYYY-MM)
+        if not re.match(r"^\d{4}-\d{2}$", target_month_str):
+            await message.answer("⚠️ صيغة الشهر غير صحيحة. يرجى استخدام الصيغة التالية:\n`/report 2026-09`", parse_mode="Markdown")
+            return
+    else:
+        target_month_str = datetime.now().strftime("%Y-%m")
+
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
     cursor.execute("""
@@ -206,15 +214,15 @@ async def send_immediate_report(message: types.Message, state: FSMContext):
         FROM users u
         LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ?
         GROUP BY u.telegram_id
-    """, (current_month_str,))
+    """, (target_month_str,))
     creators = cursor.fetchall()
     conn.close()
     
     if not creators:
-        await message.answer(f"⚠️ لا توجد بيانات مسجلة لشهر {current_month_str} حتى الآن.")
+        await message.answer(f"⚠️ لا توجد بيانات مسجلة لشهر {target_month_str}.")
         return
         
-    report_text = f"⚡ **تقرير فوري لشهر {current_month_str}:**\n\n"
+    report_text = f"⚡ **تقرير لشهر {target_month_str}:**\n\n"
     for idx, c in enumerate(creators, 1):
         v_count = c[1] or 0
         v_views = c[2] or 0
@@ -286,7 +294,6 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
-# أمر البحث عن المستخدمين (/user) - محصور حصرياً للمشرفين الأساسيين فقط باستخدام is_admin
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -329,7 +336,6 @@ async def get_group_id(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"معرّف المحادثة (Chat ID): {message.chat.id}\nمعرّف حسابك (Telegram ID): {message.from_user.id}")
 
-# إحصائيات المشرفين العامة (للمشرفين فقط باستخدام is_admin)
 @dp.message(Command("admin_stats"))
 async def admin_stats_handler(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -352,7 +358,6 @@ async def admin_stats_handler(message: types.Message, state: FSMContext):
         text += f"{idx}. Game ID: {c[0]} | Telegram ID: `{t_id}` | الفيديوهات: {v_count} | المشاهدات: {v_views:,} | الرتبة: {calculate_rank(v_views, v_count)}\n"
     await message.answer(text, parse_mode="Markdown")
 
-# ملخص المشرفين العام (للمشرفين فقط باستخدام is_admin)
 @dp.message(Command("admin_summary"))
 async def admin_summary_handler(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
