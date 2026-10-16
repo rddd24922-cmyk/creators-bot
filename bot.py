@@ -58,6 +58,11 @@ def init_db():
 
 init_db()
 
+# دالة خاصة بالتحقق من المشرفين الأساسيين فقط (لأوامر الإدارة الحصرية)
+def is_admin(telegram_id: int) -> bool:
+    return telegram_id in ADMIN_IDS
+
+# دالة التحقق من صناع المحتوى المعتمدين (لإرسال المقاطع)
 def is_allowed(telegram_id: int) -> bool:
     if telegram_id in ADMIN_IDS:
         return True
@@ -186,10 +191,10 @@ async def report_scheduler():
                         
         await asyncio.sleep(60)
 
-# أمر التقرير الفوري (للمشرفين فقط)
+# أمر التقرير الفوري (للمشرفين فقط باستخدام is_admin)
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
@@ -221,10 +226,10 @@ async def send_immediate_report(message: types.Message, state: FSMContext):
 
 @dp.message(Command("allow"))
 async def allow_user(message: types.Message, state: FSMContext):
-    await state.clear()
-    if not is_allowed(message.from_user.id):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
+    await state.clear()
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
         await message.answer("⚠️ طريقة الاستخدام: /allow [Telegram_ID]")
@@ -244,10 +249,10 @@ async def allow_user(message: types.Message, state: FSMContext):
 
 @dp.message(Command("unallow"))
 async def unallow_user(message: types.Message, state: FSMContext):
-    await state.clear()
-    if not is_allowed(message.from_user.id):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
+    await state.clear()
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
         return
@@ -281,10 +286,10 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
-# أمر البحث عن المستخدمين (/user) - مؤمن بالكامل للمشرفين فقط
+# أمر البحث عن المستخدمين (/user) - محصور حصرياً للمشرفين الأساسيين فقط باستخدام is_admin
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
@@ -324,10 +329,10 @@ async def get_group_id(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"معرّف المحادثة (Chat ID): {message.chat.id}\nمعرّف حسابك (Telegram ID): {message.from_user.id}")
 
-# إحصائيات المشرفين العامة
+# إحصائيات المشرفين العامة (للمشرفين فقط باستخدام is_admin)
 @dp.message(Command("admin_stats"))
 async def admin_stats_handler(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
@@ -347,10 +352,10 @@ async def admin_stats_handler(message: types.Message, state: FSMContext):
         text += f"{idx}. Game ID: {c[0]} | Telegram ID: `{t_id}` | الفيديوهات: {v_count} | المشاهدات: {v_views:,} | الرتبة: {calculate_rank(v_views, v_count)}\n"
     await message.answer(text, parse_mode="Markdown")
 
-# ملخص المشرفين العام
+# ملخص المشرفين العام (للمشرفين فقط باستخدام is_admin)
 @dp.message(Command("admin_summary"))
 async def admin_summary_handler(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
