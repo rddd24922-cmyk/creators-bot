@@ -541,7 +541,7 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     if not rows:
         await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month}.", reply_markup=main_keyboard)
         return
-    res = f"🎬 مقاطعك المسجلة لشهر {current_month} (عدد مفتوق):\n\n"
+    res = f"🎬 مقاطعك المسجلة لشهر {current_month}:\n\n"
     for idx, row in enumerate(rows, 1):
         res += f"{idx}. {row[0]}\nالمشاهدات: {row[1]:,} | {row[2]}\n\n"
     res += f"إجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nرتبتك الحالية: {calculate_rank(total_views, v_count)}"
@@ -640,32 +640,6 @@ URL_PATTERNS = {
     "Facebook": r"(https?://(?:www\.)?(?:facebook\.com|fb\.watch)/\S+)"
 }
 
-# --- جلب سريع جداً محمي بمهلة 2 ثانية يمنع تعليق البوت تماماً ---
-async def fetch_views_automatically(video_url: str) -> int:
-    def _quick_fetch():
-        ydl_opts = {
-            'extract_flat': True,
-            'skip_download': True,
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 2
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                if info and 'view_count' in info and info['view_count'] is not None:
-                    return int(info['view_count'])
-        except Exception:
-            pass
-        return 0
-
-    try:
-        loop = asyncio.get_event_loop()
-        views = await asyncio.wait_for(loop.run_in_executor(None, _quick_fetch), timeout=2.5)
-        return views
-    except Exception:
-        return 0
-
 @dp.message(F.text.contains("إرسال مقطع جديد"))
 async def start_submission(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -681,7 +655,7 @@ async def start_submission(message: types.Message, state: FSMContext):
         await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
         return
     
-    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):\n*(سيتم جلب المشاهدات تلقائياً)*", reply_markup=cancel_keyboard)
+    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
 @dp.message(Form.waiting_for_video_url)
@@ -710,33 +684,29 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    processing_msg = await message.answer("⏳ جاري تسجيل المقطع وجلب المشاهدات...")
-    
-    # فحص محمي بمهلة أمان فورية
-    views = await fetch_views_automatically(clean_url)
-    
+    # تسجيل مباشر وفوري بدون أي انتظار معلق أو تعليق نهائياً
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    initial_views = 0 # تبدأ هكذا ويتم مراجعتها أو تحديثها لاحقاً
     
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (telegram_id, clean_url, views, current_month, now))
+        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (telegram_id, clean_url, initial_views, current_month, now))
         conn.commit()
         cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
         stats = cursor.fetchone()
-        current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
+        current_rank = calculate_rank(stats[1] or 0, stats[0] or 1)
         
-        await bot.edit_message_text(
-            f"✅ تم تسجيل المقطع بنجاح!\n👁 المشاهدات المسجلة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
-            chat_id=message.chat.id,
-            message_id=processing_msg.message_id,
-            reply_markup=main_keyboard
+        await message.answer(
+            f"✅ **تم تسجيل المقطع بنجاح فوري!**\n📹 المنصة: {matched_platform}\n📊 إجمالي مقاطعة هذا الشهر: {stats[0]}\nرتبتك الحالية: {current_rank}",
+            reply_markup=main_keyboard,
+            parse_mode="Markdown"
         )
         await state.clear()
     except psycopg2.IntegrityError:
         conn.rollback()
-        await bot.edit_message_text("❌ هذا الرابط مسجل مسبقاً في النظام!", chat_id=message.chat.id, message_id=processing_msg.message_id, reply_markup=main_keyboard)
+        await message.answer("❌ هذا الرابط مسجل مسبقاً في النظام!", reply_markup=main_keyboard)
         await state.clear()
     finally:
         conn.close()
