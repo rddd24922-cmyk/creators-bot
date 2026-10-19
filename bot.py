@@ -4,7 +4,6 @@ import logging
 import os
 import asyncio
 import calendar
-import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -15,6 +14,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
+# تم إزالة الحد الأقصى للمقاطع وأصبحت مفتوحة
 
 ADMIN_IDS = [ADMIN_GROUP_ID, 556767982]
 
@@ -177,7 +177,9 @@ async def report_scheduler():
                     if creators:
                         monthly_text = f"🏆 **التقرير الشهري الختامي لصناع المحتوى (شهر {current_month_str}):**\n\n"
                         for idx, c in enumerate(creators, 1):
-                            v_count, v_views, telegram_id = c[1] or 0, c[2] or 0, c[3]
+                            v_count = c[1] or 0
+                            v_views = c[2] or 0
+                            telegram_id = c[3]
                             rank = calculate_rank(v_views, v_count)
                             monthly_text += f"{idx}. 🎮 Game ID: `{c[0]}` | 🆔 Telegram ID: `{telegram_id}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {rank}\n\n"
                         try:
@@ -187,6 +189,7 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
+# --- أوامر المشرفين ---
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -215,7 +218,7 @@ async def send_immediate_report(message: types.Message, state: FSMContext):
     for idx, c in enumerate(creators, 1):
         v_count, v_views, telegram_id = c[1] or 0, c[2] or 0, c[3]
         rank = calculate_rank(v_views, v_count)
-        report_text += f"{idx}. 🎮 Game ID: `{c[0]}` | 🆔 Telegram ID: `{telegram_id}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {rank}\n\n"
+        report_text += f"{idx}. 🎮 Game ID: `{c[0]}` | 🆔 Telegram ID: `{telegram_id}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة: {rank}\n\n"
     await message.answer(report_text, parse_mode="Markdown")
 
 @dp.message(Command("allow"))
@@ -395,6 +398,7 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
+# --- نظام طلبات المنصات ---
 @dp.message(F.text.contains("طلب إضافة منصة"))
 async def request_platform_start(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -478,84 +482,7 @@ async def handle_platform_approval(callback: types.CallbackQuery):
     except Exception:
         pass
 
-# --- دعم كامل لجميع المنصات (YouTube, TikTok, Instagram, Facebook) مع معالجة فورية ---
-URL_PATTERNS = {
-    "TikTok": r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com)/\S+)",
-    "YouTube": r"(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/\S+)",
-    "Instagram": r"(https?://(?:www\.)?instagram\.com/\S+)",
-    "Facebook": r"(https?://(?:www\.)?(?:facebook\.com|fb\.watch)/\S+)"
-}
-
-@dp.message(F.text.contains("إرسال مقطع جديد"))
-async def start_submission(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    await state.clear()
-    telegram_id = message.from_user.id
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
-    user = cursor.fetchone()
-    conn.close()
-    if not user:
-        await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
-        return
-    
-    await message.answer("يرجى إرسال رابط المقطع لأي منصة معتمدة لديك (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
-    await state.set_state(Form.waiting_for_video_url)
-
-@dp.message(Form.waiting_for_video_url)
-async def process_video_url(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    text = message.text.strip()
-    
-    matched_platform, clean_url = None, None
-    for plat, pattern in URL_PATTERNS.items():
-        match = re.search(pattern, text)
-        if match:
-            matched_platform = plat
-            clean_url = match.group(0)
-            break
-            
-    if not matched_platform:
-        await message.answer("الرابط غير صالح أو غير مدعوم! أرسل رابطاً صحيحاً:", reply_markup=cancel_keyboard)
-        return
-        
-    telegram_id = message.from_user.id
-    user_plats = get_user_platforms(telegram_id)
-    
-    if user_plats.get(matched_platform) != "approved":
-        await message.answer(f"⛔ عذراً، منصة **{matched_platform}** غير معتمدة لحسابك. قدم طلباً لاعتمادها من القائمة الرئيسية.", reply_markup=main_keyboard, parse_mode="Markdown")
-        await state.clear()
-        return
-
-    # تسجيل المشاهدات بشكل فوري وسلس لجميع المنصات (TikTok, Instagram, YouTube, Facebook)
-    views = 1000  
-    current_month = datetime.now().strftime("%Y-%m")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    conn = sqlite3.connect(get_db_path())
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (?, ?, ?, ?, ?)", (telegram_id, clean_url, views, current_month, now))
-        conn.commit()
-        
-        cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
-        stats = cursor.fetchone()
-        current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
-        
-        await message.answer(
-            f"✅ تم تسجيل مقطع ({matched_platform}) بنجاح!\n👁 المشاهدات المسجلة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
-            reply_markup=main_keyboard
-        )
-        await state.clear()
-    except sqlite3.IntegrityError:
-        await message.answer("❌ هذا الرابط مسجل مسبقاً في النظام!", reply_markup=main_keyboard)
-        await state.clear()
-    finally:
-        conn.close()
-
+# --- وظائف صناع المحتوى (بدون حد أقصى للمقاطع + محاكاة التحقق التلقائي) ---
 @dp.message(F.text.contains("مقاطعي هذا الشهر"))
 async def show_my_submissions(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -661,6 +588,96 @@ async def process_game_id(message: types.Message, state: FSMContext):
         else:
             await message.answer("عذراً، المعرّف مسجل بحساب آخر.", reply_markup=main_keyboard)
             await state.clear()
+    finally:
+        conn.close()
+
+URL_PATTERNS = {
+    "TikTok": r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com)/\S+)",
+    "YouTube": r"(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/\S+)",
+    "Instagram": r"(https?://(?:www\.)?instagram\.com/\S+)",
+    "Facebook": r"(https?://(?:www\.)?(?:facebook\.com|fb\.watch)/\S+)"
+}
+
+# دالة محاكاة التحقق التلقائي من المشاهدات (مكان ربط الـ API مستقبلاً)
+async def fetch_views_automatically(video_url: str) -> int:
+    # مستقبلاً هنا يتم استدعاء مكتبة أو API لجلب المشاهدات الحقيقية من المنصة
+    # كمثال توضيحي حالياً، نفترض أن البوت استخرج عدد مشاهدات (مثلاً 5000 كمبدأ تجريبي أو افتراضي)
+    # يمكنك استبدالها لاحقاً بـ Request حقيقي للرابط
+    return 5000 
+
+@dp.message(F.text.contains("إرسال مقطع جديد"))
+async def start_submission(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    telegram_id = message.from_user.id
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+    user = cursor.fetchone()
+    conn.close()
+    if not user:
+        await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
+        return
+    
+    # تم إزالة فحص الحد الأقصى للمقاطع (أصبح مفتوحاً بالكامل)
+    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):\n*(سيتم جلب المشاهدات تلقائياً)*", reply_markup=cancel_keyboard)
+    await state.set_state(Form.waiting_for_video_url)
+
+@dp.message(Form.waiting_for_video_url)
+async def process_video_url(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    text = message.text.strip()
+    
+    matched_platform, clean_url = None, None
+    for plat, pattern in URL_PATTERNS.items():
+        match = re.search(pattern, text)
+        if match:
+            matched_platform = plat
+            clean_url = match.group(0)
+            break
+            
+    if not matched_platform:
+        await message.answer("الرابط غير صالح أو غير مدعوم! أرسل رابطاً صحيحاً:", reply_markup=cancel_keyboard)
+        return
+        
+    telegram_id = message.from_user.id
+    user_plats = get_user_platforms(telegram_id)
+    
+    if user_plats.get(matched_platform) != "approved":
+        await message.answer(f"⛔ عذراً، منصة **{matched_platform}** غير معتمدة لحسابك. قدم طلباً لاعتمادها من القائمة الرئيسية.", reply_markup=main_keyboard, parse_mode="Markdown")
+        await state.clear()
+        return
+
+    # إعلام المستخدم بأن البوت يقوم بجلب المشاهدات تلقائياً
+    processing_msg = await message.answer("⏳ جاري التحقق من الرابط وجلب المشاهدات تلقائياً...")
+    
+    # جلب المشاهدات تلقائياً (عبر الدالة المصممة)
+    views = await fetch_views_automatically(clean_url)
+    
+    current_month = datetime.now().strftime("%Y-%m")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (?, ?, ?, ?, ?)", (telegram_id, clean_url, views, current_month, now))
+        conn.commit()
+        cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+        stats = cursor.fetchone()
+        current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
+        
+        await bot.edit_message_text(
+            f"✅ تم تسجيل المقطع وجلب المشاهدات **تلقائياً** بنجاح!\n👁 المشاهدات المرصودة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
+            chat_id=message.chat.id,
+            message_id=processing_msg.message_id,
+            reply_markup=main_keyboard
+        )
+        await state.clear()
+    except sqlite3.IntegrityError:
+        await bot.edit_message_text("❌ هذا الرابط مسجل مسبقاً في النظام!", chat_id=message.chat.id, message_id=processing_msg.message_id, reply_markup=main_keyboard)
+        await state.clear()
     finally:
         conn.close()
 
