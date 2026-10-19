@@ -641,34 +641,39 @@ URL_PATTERNS = {
     "Facebook": r"(https?://(?:www\.)?(?:facebook\.com|fb\.watch)/\S+)"
 }
 
+# --- دالة مصلحة ومحصنة ضد التعليق وبوقت مهلة 10 ثوانٍ كحد أقصى ---
 async def fetch_views_automatically(video_url: str) -> int:
-    """
-    جلب عدد المشاهدات الحقيقي تلقائياً من الرابط باستخدام yt-dlp
-    """
     ydl_opts = {
         'extract_flat': True,
         'skip_download': True,
         'quiet': True,
+        'no_warnings': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
     }
     
-    try:
-        loop = asyncio.get_running_loop()
-        def extract_info():
+    def extract_info():
+        try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=False)
-                return info
-                
-        info = await loop.run_in_executor(None, extract_info)
-        
-        if info:
-            views = info.get('view_count')
-            if views is not None:
-                return int(views)
-                
+                if info:
+                    views = info.get('view_count')
+                    if views is not None:
+                        return int(views)
+        except Exception as e:
+            logging.error(f"Error extracting info for {video_url}: {e}")
+        return 0
+
+    try:
+        loop = asyncio.get_running_loop()
+        # حد أقصى للانتظار 10 ثوانٍ لمنع تعليق البوت نهائياً
+        views = await asyncio.wait_for(loop.run_in_executor(None, extract_info), timeout=10.0)
+        return views
+    except asyncio.TimeoutError:
+        logging.warning(f"Timeout occurred while fetching views for {video_url}")
+        return 0
     except Exception as e:
-        logging.error(f"Error fetching views for {video_url}: {e}")
-        
-    return 0
+        logging.error(f"General error in fetch_views_automatically: {e}")
+        return 0
 
 @dp.message(F.text.contains("إرسال مقطع جديد"))
 async def start_submission(message: types.Message, state: FSMContext):
@@ -715,7 +720,13 @@ async def process_video_url(message: types.Message, state: FSMContext):
         return
 
     processing_msg = await message.answer("⏳ جاري التحقق من الرابط وجلب المشاهدات الحقيقية تلقائياً...")
-    views = await fetch_views_automatically(clean_url)
+    
+    # جلب المشاهدات بأمان مع الحماية ضد التعليق
+    try:
+        views = await fetch_views_automatically(clean_url)
+    except Exception as e:
+        logging.error(f"Failed to fetch views: {e}")
+        views = 0
     
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -730,7 +741,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
         current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
         
         await bot.edit_message_text(
-            f"✅ تم تسجيل المقطع وجلب المشاهدات الحقيقية **تلقائياً** بنجاح!\n👁 المشاهدات المرصودة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
+            f"✅ تم تسجيل المقطع بنجاح!\n👁 المشاهدات المرصودة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
             chat_id=message.chat.id,
             message_id=processing_msg.message_id,
             reply_markup=main_keyboard
