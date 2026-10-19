@@ -4,7 +4,7 @@ import logging
 import os
 import asyncio
 import calendar
-import requests
+import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -15,7 +15,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
-# تم إزالة الحد الأقصى للمقاطع وأصبحت مفتوحة بالكامل للمتألقين[span_2](start_span)[span_2](end_span)
+# تم إزالة الحد الأقص للمقاطع وأصبحت مفتوحة بالكامل للمتألقين
 
 ADMIN_IDS = [ADMIN_GROUP_ID, 556767982]
 
@@ -31,6 +31,7 @@ def get_db_path():
 def init_db():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
+    # استخدام CREATE TABLE IF NOT EXISTS يضمن عدم مسح أو حذف أي بيانات سابقة للاعبين أبداً عند إعادة التشغيل
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS whitelist (
             telegram_id INTEGER PRIMARY KEY,
@@ -481,9 +482,9 @@ async def handle_platform_approval(callback: types.CallbackQuery):
     except Exception:
         pass
 
-# --- دالة التحقق والتجلب التلقائي للمشاهدات عبر الـ API ---
+# --- دالة التحقق والجلب التلقائي للمشاهدات باستخدام aiohttp (المتوافقة مع البوت) ---
 async def fetch_views_automatically(video_url: str) -> int:
-    """جلب المشاهدات الحقيقية تلقائياً (دعم يوتيوب كمثال أساسي رسمي عبر الـ API)[span_3](start_span)[span_3](end_span)"""
+    """جلب المشاهدات الحقيقية تلقائياً (دعم يوتيوب عبر الـ API الرسمي باستخدام aiohttp)"""
     video_id_match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", video_url)
     if video_id_match:
         video_id = video_id_match.group(1)
@@ -491,14 +492,15 @@ async def fetch_views_automatically(video_url: str) -> int:
         if API_KEY:
             api_url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics&id={video_id}&key={API_KEY}"
             try:
-                response = requests.get(api_url)
-                data = response.json()
-                if "items" in data and len(data["items"]) > 0:
-                    return int(data["items"][0]["statistics"]["viewCount"])
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(api_url) as response:
+                        data = await response.json()
+                        if "items" in data and len(data["items"]) > 0:
+                            return int(data["items"][0]["statistics"]["viewCount"])
             except Exception as e:
                 logging.error(f"YouTube API Error: {e}")
                 
-    # قيمة افتراضية في حال لم يتم إدخال مفتاح الـ API بعد أو للمنصات الأخرى
+    # قيمة افتراضية آمنة في حال عدم توفر المفتاح أو للمنصات الأخرى
     return 1000 
 
 # --- وظائف صناع المحتوى (بدون حد أقصى للمقاطع + جلب المشاهدات تلقائياً) ---
