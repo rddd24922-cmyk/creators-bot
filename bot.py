@@ -6,7 +6,6 @@ import calendar
 from datetime import datetime, timedelta
 import psycopg2
 import psycopg2.extras
-import yt_dlp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -103,6 +102,7 @@ class Form(StatesGroup):
     waiting_for_update_game_id = State()
     waiting_for_platform_choice = State()
     waiting_for_video_url = State()
+    waiting_for_new_views = State()
 
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
@@ -132,7 +132,7 @@ main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="إرسال مقطع جديد"), KeyboardButton(text="طلب إضافة منصة")],
         [KeyboardButton(text="مقاطعي هذا الشهر"), KeyboardButton(text="حسابي المعرّف")],
-        [KeyboardButton(text="تعديل المعرّف")]
+        [KeyboardButton(text="تعديل المعرّف"), KeyboardButton(text="تعديل مشاهدات مقطع")]
     ],
     resize_keyboard=True
 )
@@ -152,55 +152,6 @@ platforms_keyboard = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True
 )
-
-# دالة خلفية لتحديث المشاهدات بشكل آمن وسريع دون تعليق البوت
-async def fetch_single_video_views(video_url: str) -> int:
-    def _fetch():
-        ydl_opts = {
-            'extract_flat': True,
-            'skip_download': True,
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 3
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                if info and 'view_count' in info and info['view_count'] is not None:
-                    return int(info['view_count'])
-        except Exception:
-            pass
-        return 0
-
-    try:
-        loop = asyncio.get_event_loop()
-        return await asyncio.wait_for(loop.run_in_executor(None, _fetch), timeout=3.5)
-    except Exception:
-        return 0
-
-async def background_view_updater():
-    """مهمة خلفية تعمل تلقائياً لتحديث مشاهدات المقاطع المسجلة بصمت"""
-    while True:
-        await asyncio.sleep(3600) # تعمل كل ساعة مثلاً
-        try:
-            current_month = datetime.now().strftime("%Y-%m")
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, video_url FROM submissions WHERE submission_month = %s", (current_month,))
-            submissions = cursor.fetchall()
-            conn.close()
-
-            for sub_id, v_url in submissions:
-                new_views = await fetch_single_video_views(v_url)
-                if new_views > 0:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE submissions SET views = %s WHERE id = %s", (new_views, sub_id))
-                    conn.commit()
-                    conn.close()
-                await asyncio.sleep(1) # فاصل زمني بسيط بين كل رابط وآخر لمنع الضغط
-        except Exception as e:
-            logging.error(f"Error in background_view_updater: {e}")
 
 async def report_scheduler():
     last_monthly_report_month = ""
@@ -245,68 +196,52 @@ async def broadcast_message(message: types.Message, state: FSMContext):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
-    
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer("⚠️ طريقة الاستخدام:\n`/broadcast [النص الذي تريد إرساله]`", parse_mode="Markdown")
         return
-        
     broadcast_text = args[1].strip()
-    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT telegram_id FROM users")
     users = cursor.fetchall()
     conn.close()
-    
     if not users:
         await message.answer("⚠️ لا توجد أي حسابات مسجلة في البوت حالياً.")
         return
-        
-    sent_count = 0
-    failed_count = 0
-    
+    sent_count, failed_count = 0, 0
     status_msg = await message.answer(f"⏳ جاري إرسال الرسالة إلى {len(users)} صانع محتوى...")
-    
     for user in users:
-        t_id = user[0]
         try:
-            await bot.send_message(t_id, f"📢 **إشعار من الإدارة:**\n\n{broadcast_text}", parse_mode="Markdown")
+            await bot.send_message(user[0], f"📢 **إشعار من الإدارة:**\n\n{broadcast_text}", parse_mode="Markdown")
             sent_count += 1
             await asyncio.sleep(0.1)
         except Exception:
             failed_count += 1
-            
-    await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال (حظروا البوت): `{failed_count}`", parse_mode="Markdown")
+    await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال: `{failed_count}`", parse_mode="Markdown")
 
-# --- أمر إداري لتحديث المشاهدات فوراً يدوياً ---
-@dp.message(Command("update_views"))
-async def trigger_update_views(message: types.Message, state: FSMContext):
+# --- أمر إداري مباشر لتعديل مشاهدات مقطع عبر الرابط ---
+@dp.message(Command("set_views"))
+async def admin_set_views(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     await state.clear()
-    status_msg = await message.answer("⏳ جاري تحديث مشاهدات كافة مقاطع هذا الشهر في الخلفية...")
+    args = message.text.split()
+    if len(args) < 3 or not args[2].isdigit():
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/set_views [رابط_المقطع] [عدد_المشاهدات_الجديد]`", parse_mode="Markdown")
+        return
+    video_url = args[1].strip()
+    new_views = int(args[2].strip())
     
-    current_month = datetime.now().strftime("%Y-%m")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, video_url FROM submissions WHERE submission_month = %s", (current_month,))
-    submissions = cursor.fetchall()
+    cursor.execute("UPDATE submissions SET views = %s WHERE video_url = %s", (new_views, video_url))
+    if cursor.rowcount > 0:
+        conn.commit()
+        await message.answer(f"✅ تم تحديث مشاهدات المقطع إلى: **{new_views:,}** مشاهدة بنجاح!")
+    else:
+        await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
     conn.close()
-    
-    updated_count = 0
-    for sub_id, v_url in submissions:
-        new_views = await fetch_single_video_views(v_url)
-        if new_views > 0:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("UPDATE submissions SET views = %s WHERE id = %s", (new_views, sub_id))
-            conn.commit()
-            conn.close()
-            updated_count += 1
-        await asyncio.sleep(0.5)
-        
-    await status_msg.edit_text(f"✅ تم الانتهاء من تحديث المشاهدات بنجاح!\n📊 تم تحديث عدد المقاطع التي استجابت: `{updated_count}`")
 
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
@@ -384,7 +319,6 @@ async def show_pending_platforms(message: types.Message, state: FSMContext):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
-    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -396,11 +330,9 @@ async def show_pending_platforms(message: types.Message, state: FSMContext):
     """)
     pending_requests = cursor.fetchall()
     conn.close()
-    
     if not pending_requests:
         await message.answer("🎉 لا توجد أي طلبات اعتماد منصات معلقة حالياً.")
         return
-        
     for req in pending_requests:
         telegram_id, platform, requested_at, game_id = req[0], req[1], req[2], req[3] or "غير مسجل"
         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -575,7 +507,6 @@ async def handle_platform_approval(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("ليس لديك صلاحية.", show_alert=True)
         return
-    
     data_parts = callback.data.split("_")
     action, telegram_id, platform = data_parts[1], int(data_parts[2]), data_parts[3]
     new_status = "approved" if action == "app" else "rejected"
@@ -591,7 +522,6 @@ async def handle_platform_approval(callback: types.CallbackQuery):
         await callback.message.edit_text(callback.message.text + f"\n\n**الحالة الناتجة:** تم تغيير الحالة إلى ({status_text}).", parse_mode="Markdown")
     except Exception:
         pass
-        
     await callback.answer(f"تم تحديث الحالة إلى {status_text}")
     try:
         if action == "app":
@@ -680,6 +610,68 @@ async def process_update_game_id(message: types.Message, state: FSMContext):
         await state.clear()
     finally:
         conn.close()
+
+# --- ميزة تعديل مشاهدات مقطع لصانع المحتوى من القائمة ---
+@dp.message(F.text.contains("تعديل مشاهدات مقطع"))
+async def start_creator_update_views(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    telegram_id = message.from_user.id
+    current_month = datetime.now().strftime("%Y-%m")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT video_url FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        await message.answer("⚠️ ليس لديك أي مقاطع مسجلة هذا الشهر لتعديل مشاهداتها.", reply_markup=main_keyboard)
+        return
+        
+    text = "🎬 **اختر المقطع الذي تريد تحديث مشاهداته بإرسال رقمه:**\n\n"
+    for idx, row in enumerate(rows, 1):
+        text += f"{idx}. {row[0]}\n"
+    
+    # حفظ المقاطع مؤقتاً في الـ state
+    await state.update_data(user_videos=[r[0] for r in rows])
+    await message.answer(text, reply_markup=cancel_keyboard, parse_mode="Markdown")
+    await state.set_state(Form.waiting_for_new_views)
+
+@dp.message(Form.waiting_for_new_views)
+async def process_creator_new_views(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    text = message.text.strip()
+    data = await state.get_data()
+    user_videos = data.get("user_videos", [])
+    
+    # إذا كانت الخطوة الأولى (اختيار رقم الفيديو)
+    if "selected_video" not in data:
+        if not text.isdigit() or int(text) < 1 or int(text) > len(user_videos):
+            await message.answer("❌ رقم غير صحيح. اختر رقماً صحيحاً من القائمة:", reply_markup=cancel_keyboard)
+            return
+        selected_url = user_videos[int(text) - 1]
+        await state.update_data(selected_video=selected_url)
+        await message.answer(f"📊 الرابط المختار:\n`{selected_url}`\n\nالآن أرسل **عدد المشاهدات الجديد** (أرقام صحيحة فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        return
+        
+    # إذا كانت الخطوة الثانية (إرسال عدد المشاهدات الجديد)
+    if not text.isdigit():
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
+        return
+        
+    new_views = int(text)
+    selected_url = data.get("selected_video")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE submissions SET views = %s WHERE video_url = %s", (new_views, selected_url))
+    conn.commit()
+    conn.close()
+    
+    await state.clear()
+    await message.answer(f"✅ تم تحديث مشاهدات المقطع بنجاح إلى: **{new_views:,}** مشاهدة!", reply_markup=main_keyboard, parse_mode="Markdown")
 
 @dp.message(Form.waiting_for_game_id)
 async def process_game_id(message: types.Message, state: FSMContext):
@@ -776,7 +768,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
         current_rank = calculate_rank(stats[1] or 0, stats[0] or 1)
         
         await message.answer(
-            f"✅ **تم تسجيل المقطع بنجاح فوري!**\n📹 المنصة: {matched_platform}\n📊 إجمالي مقاطعة هذا الشهر: {stats[0]}\nرتبتك الحالية: {current_rank}",
+            f"✅ **تم تسجيل المقطع بنجاح فوري!**\n📹 المنصة: {matched_platform}\n📊 إجمالي مقاطعة هذا الشهر: {stats[0]}\nرتبتك الحالية: {current_rank}\n\n*(يمكنك تحديث مشاهدات مقاطعك في أي وقت من زر "تعديل مشاهدات مقطع")*",
             reply_markup=main_keyboard,
             parse_mode="Markdown"
         )
@@ -790,8 +782,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
 
 async def main():
     asyncio.create_task(report_scheduler())
-    asyncio.create_task(background_view_updater()) # تشغيل مهمة تحديث المشاهدات في الخلفية
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.main() if hasattr(asyncio, "main") else asyncio.run(main())
