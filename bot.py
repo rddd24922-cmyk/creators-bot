@@ -190,7 +190,6 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
-# --- أمر الإرسال الجماعي للمشرفين ---
 @dp.message(Command("broadcast"))
 async def broadcast_message(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -542,7 +541,7 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     if not rows:
         await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month}.", reply_markup=main_keyboard)
         return
-    res = f"🎬 مقاطعك المسجلة لشهر {current_month} (عدد مفتوح):\n\n"
+    res = f"🎬 مقاطعك المسجلة لشهر {current_month} (عدد مفتوق):\n\n"
     for idx, row in enumerate(rows, 1):
         res += f"{idx}. {row[0]}\nالمشاهدات: {row[1]:,} | {row[2]}\n\n"
     res += f"إجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nرتبتك الحالية: {calculate_rank(total_views, v_count)}"
@@ -641,38 +640,30 @@ URL_PATTERNS = {
     "Facebook": r"(https?://(?:www\.)?(?:facebook\.com|fb\.watch)/\S+)"
 }
 
-# --- دالة مصلحة ومحصنة ضد التعليق وبوقت مهلة 10 ثوانٍ كحد أقصى ---
+# --- جلب سريع جداً محمي بمهلة 2 ثانية يمنع تعليق البوت تماماً ---
 async def fetch_views_automatically(video_url: str) -> int:
-    ydl_opts = {
-        'extract_flat': True,
-        'skip_download': True,
-        'quiet': True,
-        'no_warnings': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-    }
-    
-    def extract_info():
+    def _quick_fetch():
+        ydl_opts = {
+            'extract_flat': True,
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 2
+        }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=False)
-                if info:
-                    views = info.get('view_count')
-                    if views is not None:
-                        return int(views)
-        except Exception as e:
-            logging.error(f"Error extracting info for {video_url}: {e}")
+                if info and 'view_count' in info and info['view_count'] is not None:
+                    return int(info['view_count'])
+        except Exception:
+            pass
         return 0
 
     try:
-        loop = asyncio.get_running_loop()
-        # حد أقصى للانتظار 10 ثوانٍ لمنع تعليق البوت نهائياً
-        views = await asyncio.wait_for(loop.run_in_executor(None, extract_info), timeout=10.0)
+        loop = asyncio.get_event_loop()
+        views = await asyncio.wait_for(loop.run_in_executor(None, _quick_fetch), timeout=2.5)
         return views
-    except asyncio.TimeoutError:
-        logging.warning(f"Timeout occurred while fetching views for {video_url}")
-        return 0
-    except Exception as e:
-        logging.error(f"General error in fetch_views_automatically: {e}")
+    except Exception:
         return 0
 
 @dp.message(F.text.contains("إرسال مقطع جديد"))
@@ -690,7 +681,7 @@ async def start_submission(message: types.Message, state: FSMContext):
         await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
         return
     
-    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):\n*(سيتم جلب المشاهدات الحقيقية تلقائياً)*", reply_markup=cancel_keyboard)
+    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):\n*(سيتم جلب المشاهدات تلقائياً)*", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
 @dp.message(Form.waiting_for_video_url)
@@ -719,14 +710,10 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    processing_msg = await message.answer("⏳ جاري التحقق من الرابط وجلب المشاهدات الحقيقية تلقائياً...")
+    processing_msg = await message.answer("⏳ جاري تسجيل المقطع وجلب المشاهدات...")
     
-    # جلب المشاهدات بأمان مع الحماية ضد التعليق
-    try:
-        views = await fetch_views_automatically(clean_url)
-    except Exception as e:
-        logging.error(f"Failed to fetch views: {e}")
-        views = 0
+    # فحص محمي بمهلة أمان فورية
+    views = await fetch_views_automatically(clean_url)
     
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -741,7 +728,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
         current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
         
         await bot.edit_message_text(
-            f"✅ تم تسجيل المقطع بنجاح!\n👁 المشاهدات المرصودة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
+            f"✅ تم تسجيل المقطع بنجاح!\n👁 المشاهدات المسجلة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
             chat_id=message.chat.id,
             message_id=processing_msg.message_id,
             reply_markup=main_keyboard
