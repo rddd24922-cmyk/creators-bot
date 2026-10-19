@@ -15,7 +15,6 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
-# تم إزالة الحد الأقص للمقاطع وأصبحت مفتوحة بالكامل للمتألقين
 
 ADMIN_IDS = [ADMIN_GROUP_ID, 556767982]
 
@@ -31,7 +30,6 @@ def get_db_path():
 def init_db():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
-    # استخدام CREATE TABLE IF NOT EXISTS يضمن عدم مسح أو حذف أي بيانات سابقة للاعبين أبداً عند إعادة التشغيل
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS whitelist (
             telegram_id INTEGER PRIMARY KEY,
@@ -189,7 +187,6 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
-# --- أوامر المشرفين ---
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -398,7 +395,6 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
-# --- نظام طلبات المنصات ---
 @dp.message(F.text.contains("طلب إضافة منصة"))
 async def request_platform_start(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -482,9 +478,9 @@ async def handle_platform_approval(callback: types.CallbackQuery):
     except Exception:
         pass
 
-# --- دالة التحقق والجلب التلقائي للمشاهدات باستخدام aiohttp (المتوافقة مع البوت) ---
+# --- دالة التحقق المعدلة لتدعم يوتيوب وتستجيب فوراً لباقي المنصات ---
 async def fetch_views_automatically(video_url: str) -> int:
-    """جلب المشاهدات الحقيقية تلقائياً (دعم يوتيوب عبر الـ API الرسمي باستخدام aiohttp)"""
+    """جلب مشاهدات يوتيوب تلقائياً، وتمرير بقية المنصات فوراً بقيمة افتراضية لمنع أي تعليق"""
     video_id_match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", video_url)
     if video_id_match:
         video_id = video_id_match.group(1)
@@ -500,10 +496,9 @@ async def fetch_views_automatically(video_url: str) -> int:
             except Exception as e:
                 logging.error(f"YouTube API Error: {e}")
                 
-    # قيمة افتراضية آمنة في حال عدم توفر المفتاح أو للمنصات الأخرى
+    # إنستغرام، تيك توك، فيسبوك أو يوتيوب بدون مفتاح API يتم قبولها فوراً بدون انتظار
     return 1000 
 
-# --- وظائف صناع المحتوى (بدون حد أقصى للمقاطع + جلب المشاهدات تلقائياً) ---
 @dp.message(F.text.contains("مقاطعي هذا الشهر"))
 async def show_my_submissions(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -634,7 +629,7 @@ async def start_submission(message: types.Message, state: FSMContext):
         await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
         return
     
-    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):\n*(سيتم جلب المشاهدات تلقائياً)*", reply_markup=cancel_keyboard)
+    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
 @dp.message(Form.waiting_for_video_url)
@@ -663,9 +658,8 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    processing_msg = await message.answer("⏳ جاري فحص الرابط وجلب المشاهدات تلقائياً...")
+    processing_msg = await message.answer("⏳ جاري فحص الرابط وتسجيل المقطع...")
     
-    # جلب المشاهدات تلقائياً عبر النظام البرمجي
     views = await fetch_views_automatically(clean_url)
     
     current_month = datetime.now().strftime("%Y-%m")
@@ -681,14 +675,13 @@ async def process_video_url(message: types.Message, state: FSMContext):
         current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
         
         await bot.edit_message_text(
-            f"✅ تم تسجيل المقطع وجلب المشاهدات **تلقائياً** بنجاح!\n👁 المشاهدات المرصودة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
+            f"✅ تم تسجيل المقطع بنجاح!\n👁 المشاهدات المسجلة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
             chat_id=message.chat.id,
             message_id=processing_msg.message_id,
             reply_markup=main_keyboard
         )
         await state.clear()
     except sqlite3.IntegrityError:
-        # منع تكرار الروابط تلقائياً
         await bot.edit_message_text("❌ هذا الرابط مسجل مسبقاً في النظام!", chat_id=message.chat.id, message_id=processing_msg.message_id, reply_markup=main_keyboard)
         await state.clear()
     finally:
