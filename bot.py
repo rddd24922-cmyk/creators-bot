@@ -6,6 +6,7 @@ import calendar
 from datetime import datetime, timedelta
 import psycopg2
 import psycopg2.extras
+import yt_dlp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -224,7 +225,7 @@ async def broadcast_message(message: types.Message, state: FSMContext):
         try:
             await bot.send_message(t_id, f"📢 **إشعار من الإدارة:**\n\n{broadcast_text}", parse_mode="Markdown")
             sent_count += 1
-            await asyncio.sleep(0.1) # لتفادي الحظر المؤقت من تيليجرام
+            await asyncio.sleep(0.1)
         except Exception:
             failed_count += 1
             
@@ -641,7 +642,33 @@ URL_PATTERNS = {
 }
 
 async def fetch_views_automatically(video_url: str) -> int:
-    return 5000 
+    """
+    جلب عدد المشاهدات الحقيقي تلقائياً من الرابط باستخدام yt-dlp
+    """
+    ydl_opts = {
+        'extract_flat': True,
+        'skip_download': True,
+        'quiet': True,
+    }
+    
+    try:
+        loop = asyncio.get_running_loop()
+        def extract_info():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                return info
+                
+        info = await loop.run_in_executor(None, extract_info)
+        
+        if info:
+            views = info.get('view_count')
+            if views is not None:
+                return int(views)
+                
+    except Exception as e:
+        logging.error(f"Error fetching views for {video_url}: {e}")
+        
+    return 0
 
 @dp.message(F.text.contains("إرسال مقطع جديد"))
 async def start_submission(message: types.Message, state: FSMContext):
@@ -658,7 +685,7 @@ async def start_submission(message: types.Message, state: FSMContext):
         await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
         return
     
-    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):\n*(سيتم جلب المشاهدات تلقائياً)*", reply_markup=cancel_keyboard)
+    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):\n*(سيتم جلب المشاهدات الحقيقية تلقائياً)*", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
 @dp.message(Form.waiting_for_video_url)
@@ -687,7 +714,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    processing_msg = await message.answer("⏳ جاري التحقق من الرابط وجلب المشاهدات تلقائياً...")
+    processing_msg = await message.answer("⏳ جاري التحقق من الرابط وجلب المشاهدات الحقيقية تلقائياً...")
     views = await fetch_views_automatically(clean_url)
     
     current_month = datetime.now().strftime("%Y-%m")
@@ -703,7 +730,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
         current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
         
         await bot.edit_message_text(
-            f"✅ تم تسجيل المقطع وجلب المشاهدات **تلقائياً** بنجاح!\n👁 المشاهدات المرصودة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
+            f"✅ تم تسجيل المقطع وجلب المشاهدات الحقيقية **تلقائياً** بنجاح!\n👁 المشاهدات المرصودة: {views:,}\nإجمالي مشاهداتك: {stats[1]:,}\nرتبتك الحالية: {current_rank}",
             chat_id=message.chat.id,
             message_id=processing_msg.message_id,
             reply_markup=main_keyboard
