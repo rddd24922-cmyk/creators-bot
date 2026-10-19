@@ -43,7 +43,6 @@ def init_db():
             registered_at TEXT
         )
     """)
-    # جدول المنصات المعتمدة لكل صانع محتوى
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS creator_platforms (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -271,6 +270,51 @@ async def unallow_user(message: types.Message, state: FSMContext):
     conn.close()
     await message.answer(f"🗑 تم إزالة الحساب {target_id}.")
 
+@dp.message(Command("pending_platforms"))
+async def show_pending_platforms(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
+        return
+    await state.clear()
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT p.telegram_id, p.platform, p.requested_at, u.game_id 
+        FROM creator_platforms p
+        LEFT JOIN users u ON p.telegram_id = u.telegram_id
+        WHERE p.status = 'pending'
+        ORDER BY p.requested_at ASC
+    """)
+    pending_requests = cursor.fetchall()
+    conn.close()
+    
+    if not pending_requests:
+        await message.answer("🎉 لا توجد أي طلبات اعتماد منصات معلقة حالياً.")
+        return
+        
+    for req in pending_requests:
+        telegram_id = req[0]
+        platform = req[1]
+        requested_at = req[2]
+        game_id = req[3] or "غير مسجل"
+        
+        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ موافقة", callback_data=f"plat_app_{telegram_id}_{platform}"),
+                InlineKeyboardButton(text="❌ رفض", callback_data=f"plat_rej_{telegram_id}_{platform}")
+            ]
+        ])
+        
+        text = (
+            f"🔔 **طلب منصة معلق:**\n"
+            f"🎮 Game ID: `{game_id}`\n"
+            f"🆔 Telegram ID: `{telegram_id}`\n"
+            f"📱 المنصة: **{platform}**\n"
+            f"⏱ وقت الطلب: {requested_at}"
+        )
+        await message.answer(text, reply_markup=inline_kb, parse_mode="Markdown")
+
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -382,7 +426,7 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
-# --- نظام طلبات المنصات والموافقة عليها ---
+# --- نظام طلبات المنصات مع الحماية ضد السبام ---
 @dp.message(F.text.contains("طلب إضافة منصة"))
 async def request_platform_start(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -401,6 +445,18 @@ async def process_platform_choice(message: types.Message, state: FSMContext):
         return
     
     telegram_id = message.from_user.id
+    
+    # حماية ضد السبام: التحقق مما إذا كان لديه طلب معلق مسبقاً
+    user_plats = get_user_platforms(telegram_id)
+    if user_plats.get(platform) == "pending":
+        await state.clear()
+        await message.answer(f"⚠️ لديك بالفعل طلب معلق لاعتماد منصة **{platform}**. يرجى انتظار رد الإدارة.", reply_markup=main_keyboard, parse_mode="Markdown")
+        return
+    elif user_plats.get(platform) == "approved":
+        await state.clear()
+        await message.answer(f"✅ منصة **{platform}** معتمدة لديك مسبقاً ولا تحتاج لطلب جديد.", reply_markup=main_keyboard, parse_mode="Markdown")
+        return
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
@@ -458,10 +514,14 @@ async def handle_platform_approval(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
     
-    await callback.message.edit_text(
-        callback.message.text + f"\n\n**الحالة الناتجة:** تم تغيير الحالة إلى ({status_text}) بواسطة الإدارة.",
-        parse_mode="Markdown"
-    )
+    try:
+        await callback.message.edit_text(
+            callback.message.text + f"\n\n**الحالة الناتجة:** تم تغيير الحالة إلى ({status_text}) بواسطة الإدارة.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+        
     await callback.answer(f"تم تحديث حالة المنصة إلى {status_text}")
     
     try:
