@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
@@ -43,6 +43,17 @@ def init_db():
             registered_at TEXT
         )
     """)
+    # جدول المنصات المعتمدة لكل صانع محتوى
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS creator_platforms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER,
+            platform TEXT,
+            status TEXT DEFAULT 'pending',
+            requested_at TEXT,
+            UNIQUE(telegram_id, platform)
+        )
+    """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,6 +82,14 @@ def is_allowed(telegram_id: int) -> bool:
     conn.close()
     return res is not None
 
+def get_user_platforms(telegram_id: int):
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("SELECT platform, status FROM creator_platforms WHERE telegram_id = ?", (telegram_id,))
+    res = cursor.fetchall()
+    conn.close()
+    return {row[0]: row[1] for row in res}
+
 def clean_old_submissions():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
@@ -82,6 +101,7 @@ def clean_old_submissions():
 class Form(StatesGroup):
     waiting_for_game_id = State()
     waiting_for_update_game_id = State()
+    waiting_for_platform_choice = State()
     waiting_for_video_url = State()
     waiting_for_views = State()
 
@@ -111,7 +131,7 @@ def calculate_rank(views, videos_count):
 
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="إرسال مقطع جديد")],
+        [KeyboardButton(text="إرسال مقطع جديد"), KeyboardButton(text="طلب إضافة منصة")],
         [KeyboardButton(text="مقاطعي هذا الشهر"), KeyboardButton(text="حسابي المعرّف")],
         [KeyboardButton(text="تعديل المعرّف")]
     ],
@@ -125,13 +145,21 @@ cancel_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+platforms_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="TikTok"), KeyboardButton(text="Instagram")],
+        [KeyboardButton(text="YouTube"), KeyboardButton(text="Facebook")],
+        [KeyboardButton(text="إلغاء")]
+    ],
+    resize_keyboard=True
+)
+
 async def report_scheduler():
     last_monthly_report_month = ""
     while True:
         clean_old_submissions()
         now = datetime.now()
         current_month_str = now.strftime("%Y-%m")
-        
         last_day_of_month = calendar.monthrange(now.year, now.month)[1]
         
         if now.day == last_day_of_month and now.hour == 23 and now.minute == 30:
@@ -161,46 +189,18 @@ async def report_scheduler():
                             last_monthly_report_month = current_month_str
                         except Exception as e:
                             logging.error(f"Failed to send monthly report: {e}")
-
-        if now.day == (last_day_of_month - 2) and now.hour == 12 and now.minute == 0:
-            if ADMIN_GROUP_ID != 0:
-                try:
-                    await bot.send_message(ADMIN_GROUP_ID, "⚠️ تنبيه: بقي يومان على إغلاق استقبال المقاطع ونهاية الشهر.")
-                except Exception as e:
-                    logging.error(f"Error: {e}")
-
-        if now.hour == 23 and now.minute == 59:
-            if ADMIN_GROUP_ID != 0:
-                today_date = now.strftime("%Y-%m-%d")
-                conn = sqlite3.connect(get_db_path())
-                cursor = conn.cursor()
-                cursor.execute("SELECT u.game_id, s.video_url, s.views, s.created_at, u.telegram_id FROM submissions s LEFT JOIN users u ON s.telegram_id = u.telegram_id WHERE DATE(s.created_at) = ?", (today_date,))
-                rows = cursor.fetchall()
-                conn.close()
-                
-                if rows:
-                    report_text = f"📊 التقرير اليومي ({today_date}):\n\n"
-                    for idx, row in enumerate(rows, 1):
-                        report_text += f"{idx}. Game ID: {row[0] or 'غير معروف'} | Telegram ID: {row[4] or 'غير معروف'}\nالرابط: {row[1]}\nالمشاهدات: {row[2]:,}\n\n"
-                    try:
-                        await bot.send_message(ADMIN_GROUP_ID, report_text, disable_web_page_preview=True)
-                    except Exception as e:
-                        logging.error(f"Error: {e}")
-                        
         await asyncio.sleep(60)
 
-# أمر التقرير الفوري (للمشرفين فقط) - يدعم الآن استعراض أي شهر (مثال: /report 2026-09)
+# --- أوامر المشرفين (التقارير والإدارة) ---
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
-    
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
         target_month_str = args[1].strip()
-        # التحقق من صحة صيغة التاريخ (YYYY-MM)
         if not re.match(r"^\d{4}-\d{2}$", target_month_str):
             await message.answer("⚠️ صيغة الشهر غير صحيحة. يرجى استخدام الصيغة التالية:\n`/report 2026-09`", parse_mode="Markdown")
             return
@@ -229,7 +229,6 @@ async def send_immediate_report(message: types.Message, state: FSMContext):
         telegram_id = c[3]
         rank = calculate_rank(v_views, v_count)
         report_text += f"{idx}. 🎮 Game ID: `{c[0]}` | 🆔 Telegram ID: `{telegram_id}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {rank}\n\n"
-    
     await message.answer(report_text, parse_mode="Markdown")
 
 @dp.message(Command("allow"))
@@ -272,28 +271,6 @@ async def unallow_user(message: types.Message, state: FSMContext):
     conn.close()
     await message.answer(f"🗑 تم إزالة الحساب {target_id}.")
 
-@dp.message(F.text.in_({"إلغاء", "كنسل"}))
-@dp.message(Command("cancel", "reset", "fix", "start"))
-async def global_commands_handler(message: types.Message, state: FSMContext):
-    telegram_id = message.from_user.id
-    if not is_allowed(telegram_id):
-        await message.answer("⛔ عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.")
-        return
-    await state.clear()
-    if message.text and message.text.startswith("/start"):
-        conn = sqlite3.connect(get_db_path())
-        cursor = conn.cursor()
-        cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
-        user = cursor.fetchone()
-        conn.close()
-        if user:
-            await message.answer(f"أهلاً بك مجدداً! معرّف اللعبة المسجل بحسابك: {user[0]}", reply_markup=main_keyboard)
-        else:
-            await message.answer("أهلاً بك! يرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
-            await state.set_state(Form.waiting_for_game_id)
-    else:
-        await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
-
 @dp.message(Command("user"))
 async def search_user_stats(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -330,11 +307,6 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     else:
         report += "لا توجد مقاطع مرفوعة هذا الشهر."
     await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
-
-@dp.message(Command("myid"))
-async def get_group_id(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer(f"معرّف المحادثة (Chat ID): {message.chat.id}\nمعرّف حسابك (Telegram ID): {message.from_user.id}")
 
 @dp.message(Command("admin_stats"))
 async def admin_stats_handler(message: types.Message, state: FSMContext):
@@ -382,6 +354,125 @@ async def admin_summary_handler(message: types.Message, state: FSMContext):
             summary_text += f"{idx}. Game ID: {creator[0]} - المشاهدات: {creator[1]:,}\n"
     await message.answer(summary_text)
 
+@dp.message(Command("myid"))
+async def get_group_id(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(f"معرّف المحادثة (Chat ID): {message.chat.id}\nمعرّف حسابك (Telegram ID): {message.from_user.id}")
+
+# --- التعامل مع الأوامر العامة وإلغاء العمليات ---
+@dp.message(F.text.in_({"إلغاء", "كنسل"}))
+@dp.message(Command("cancel", "reset", "fix", "start"))
+async def global_commands_handler(message: types.Message, state: FSMContext):
+    telegram_id = message.from_user.id
+    if not is_allowed(telegram_id):
+        await message.answer("⛔ عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.")
+        return
+    await state.clear()
+    if message.text and message.text.startswith("/start"):
+        conn = sqlite3.connect(get_db_path())
+        cursor = conn.cursor()
+        cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+        user = cursor.fetchone()
+        conn.close()
+        if user:
+            await message.answer(f"أهلاً بك مجدداً! معرّف اللعبة المسجل بحسابك: {user[0]}", reply_markup=main_keyboard)
+        else:
+            await message.answer("أهلاً بك! يرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
+            await state.set_state(Form.waiting_for_game_id)
+    else:
+        await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
+
+# --- نظام طلبات المنصات والموافقة عليها ---
+@dp.message(F.text.contains("طلب إضافة منصة"))
+async def request_platform_start(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    await message.answer("اختر المنصة التي تريد طلب اعتمادها لنشر المقاطع:", reply_markup=platforms_keyboard)
+    await state.set_state(Form.waiting_for_platform_choice)
+
+@dp.message(Form.waiting_for_platform_choice)
+async def process_platform_choice(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    platform = message.text.strip()
+    if platform not in ["TikTok", "Instagram", "YouTube", "Facebook"]:
+        await message.answer("الرجاء اختيار منصة صحيحة من القائمة:", reply_markup=platforms_keyboard)
+        return
+    
+    telegram_id = message.from_user.id
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO creator_platforms (telegram_id, platform, status, requested_at)
+            VALUES (?, ?, 'pending', ?)
+        """, (telegram_id, platform, now))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        cursor.execute("""
+            UPDATE creator_platforms SET status = 'pending', requested_at = ?
+            WHERE telegram_id = ? AND platform = ?
+        """, (now, telegram_id, platform))
+        conn.commit()
+    finally:
+        conn.close()
+    
+    await state.clear()
+    await message.answer(f"✅ تم إرسال طلب اعتماد منصة **{platform}** إلى الإدارة بنجاح. سيتم إشعارك عند الموافقة.", reply_markup=main_keyboard, parse_mode="Markdown")
+    
+    if ADMIN_GROUP_ID != 0:
+        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ موافقة", callback_data=f"plat_app_{telegram_id}_{platform}"),
+                InlineKeyboardButton(text="❌ رفض", callback_data=f"plat_rej_{telegram_id}_{platform}")
+            ]
+        ])
+        await bot.send_message(
+            ADMIN_GROUP_ID,
+            f"🔔 **طلب اعتماد منصة جديد:**\n👤 صانع المحتوى (Telegram ID): `{telegram_id}`\n📱 المنصة المطلوبة: **{platform}**",
+            reply_markup=inline_kb,
+            parse_mode="Markdown"
+        )
+
+@dp.callback_query(F.data.startswith("plat_"))
+async def handle_platform_approval(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("ليس لديك صلاحية.", show_alert=True)
+        return
+    
+    data_parts = callback.data.split("_")
+    action = data_parts[1]
+    telegram_id = int(data_parts[2])
+    platform = data_parts[3]
+    
+    new_status = "approved" if action == "app" else "rejected"
+    status_text = "معتمدة ✅" if action == "app" else "مرفوضة ❌"
+    
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE creator_platforms SET status = ? WHERE telegram_id = ? AND platform = ?
+    """, (new_status, telegram_id, platform))
+    conn.commit()
+    conn.close()
+    
+    await callback.message.edit_text(
+        callback.message.text + f"\n\n**الحالة الناتجة:** تم تغيير الحالة إلى ({status_text}) بواسطة الإدارة.",
+        parse_mode="Markdown"
+    )
+    await callback.answer(f"تم تحديث حالة المنصة إلى {status_text}")
+    
+    try:
+        if action == "app":
+            await bot.send_message(telegram_id, f"🎉 مبروك! تمت الموافقة على طلب اعتماد منصة **{platform}** الخاصة بك. يمكنك الآن رفع مقاطعك منها.", parse_mode="Markdown")
+        else:
+            await bot.send_message(telegram_id, f"⚠️ عذراً، تم رفض طلب اعتماد منصة **{platform}** من قِبل الإدارة.", parse_mode="Markdown")
+    except Exception:
+        pass
+
+# --- وظائف المستخدمين (تسجيل المعرف، عرض المقاطع، رفع الفيديوهات) ---
 @dp.message(F.text.contains("مقاطعي هذا الشهر"))
 async def show_my_submissions(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -493,6 +584,13 @@ async def process_game_id(message: types.Message, state: FSMContext):
     finally:
         conn.close()
 
+URL_PATTERNS = {
+    "TikTok": r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com)/\S+)",
+    "YouTube": r"(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/\S+)",
+    "Instagram": r"(https?://(?:www\.)?instagram\.com/\S+)",
+    "Facebook": r"(https?://(?:www\.)?(?:facebook\.com|fb\.watch)/\S+)"
+}
+
 @dp.message(F.text.contains("إرسال مقطع جديد"))
 async def start_submission(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -517,20 +615,39 @@ async def start_submission(message: types.Message, state: FSMContext):
     await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
-URL_PATTERN = r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|youtube\.com|youtu\.be|instagram\.com|facebook\.com|fb\.watch)/\S+)"
-
 @dp.message(Form.waiting_for_video_url)
 async def process_video_url(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
     text = message.text.strip()
-    if not re.search(URL_PATTERN, text):
-        await message.answer("الرابط غير صالح! يرجى إرسال رابط صحيح:", reply_markup=cancel_keyboard)
+    
+    matched_platform = None
+    clean_url = None
+    for plat, pattern in URL_PATTERNS.items():
+        match = re.search(pattern, text)
+        if match:
+            matched_platform = plat
+            clean_url = match.group(0)
+            break
+            
+    if not matched_platform:
+        await message.answer("الرابط غير صالح أو المنصة غير مدعومة! يرجى إرسال رابط صحيح:", reply_markup=cancel_keyboard)
         return
-    match = re.search(URL_PATTERN, text)
-    clean_url = match.group(0) if match else text
+        
+    telegram_id = message.from_user.id
+    user_plats = get_user_platforms(telegram_id)
+    
+    if user_plats.get(matched_platform) != "approved":
+        await message.answer(
+            f"⛔ عذراً، منصة **{matched_platform}** غير معتمدة لحسابك حتى الآن.\nيرجى تقديم طلب اعتماد المنصة من القائمة الرئيسية (طلب إضافة منصة) وانتظار موافقة الإدارة.",
+            reply_markup=main_keyboard,
+            parse_mode="Markdown"
+        )
+        await state.clear()
+        return
+
     await state.update_data(video_url=clean_url)
-    await message.answer("ممتاز! الآن أرسل عدد المشاهدات الحالية للمقطع (أرقام فقط):", reply_markup=cancel_keyboard)
+    await message.answer("ممتاز! المنصة معتمدة لديك. الآن أرسل عدد المشاهدات الحالية للمقطع (أرقام فقط):", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_views)
 
 @dp.message(Form.waiting_for_views)
@@ -547,6 +664,7 @@ async def process_video_views(message: types.Message, state: FSMContext):
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
     try:
