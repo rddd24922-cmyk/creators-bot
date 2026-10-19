@@ -153,6 +153,55 @@ platforms_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# دالة خلفية لتحديث المشاهدات بشكل آمن وسريع دون تعليق البوت
+async def fetch_single_video_views(video_url: str) -> int:
+    def _fetch():
+        ydl_opts = {
+            'extract_flat': True,
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 3
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                if info and 'view_count' in info and info['view_count'] is not None:
+                    return int(info['view_count'])
+        except Exception:
+            pass
+        return 0
+
+    try:
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(loop.run_in_executor(None, _fetch), timeout=3.5)
+    except Exception:
+        return 0
+
+async def background_view_updater():
+    """مهمة خلفية تعمل تلقائياً لتحديث مشاهدات المقاطع المسجلة بصمت"""
+    while True:
+        await asyncio.sleep(3600) # تعمل كل ساعة مثلاً
+        try:
+            current_month = datetime.now().strftime("%Y-%m")
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, video_url FROM submissions WHERE submission_month = %s", (current_month,))
+            submissions = cursor.fetchall()
+            conn.close()
+
+            for sub_id, v_url in submissions:
+                new_views = await fetch_single_video_views(v_url)
+                if new_views > 0:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE submissions SET views = %s WHERE id = %s", (new_views, sub_id))
+                    conn.commit()
+                    conn.close()
+                await asyncio.sleep(1) # فاصل زمني بسيط بين كل رابط وآخر لمنع الضغط
+        except Exception as e:
+            logging.error(f"Error in background_view_updater: {e}")
+
 async def report_scheduler():
     last_monthly_report_month = ""
     while True:
@@ -229,6 +278,35 @@ async def broadcast_message(message: types.Message, state: FSMContext):
             failed_count += 1
             
     await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال (حظروا البوت): `{failed_count}`", parse_mode="Markdown")
+
+# --- أمر إداري لتحديث المشاهدات فوراً يدوياً ---
+@dp.message(Command("update_views"))
+async def trigger_update_views(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    status_msg = await message.answer("⏳ جاري تحديث مشاهدات كافة مقاطع هذا الشهر في الخلفية...")
+    
+    current_month = datetime.now().strftime("%Y-%m")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, video_url FROM submissions WHERE submission_month = %s", (current_month,))
+    submissions = cursor.fetchall()
+    conn.close()
+    
+    updated_count = 0
+    for sub_id, v_url in submissions:
+        new_views = await fetch_single_video_views(v_url)
+        if new_views > 0:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE submissions SET views = %s WHERE id = %s", (new_views, sub_id))
+            conn.commit()
+            conn.close()
+            updated_count += 1
+        await asyncio.sleep(0.5)
+        
+    await status_msg.edit_text(f"✅ تم الانتهاء من تحديث المشاهدات بنجاح!\n📊 تم تحديث عدد المقاطع التي استجابت: `{updated_count}`")
 
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
@@ -684,10 +762,9 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # تسجيل مباشر وفوري بدون أي انتظار معلق أو تعليق نهائياً
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    initial_views = 0 # تبدأ هكذا ويتم مراجعتها أو تحديثها لاحقاً
+    initial_views = 0
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -713,6 +790,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
 
 async def main():
     asyncio.create_task(report_scheduler())
+    asyncio.create_task(background_view_updater()) # تشغيل مهمة تحديث المشاهدات في الخلفية
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
