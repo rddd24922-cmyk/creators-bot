@@ -1,10 +1,11 @@
-import sqlite3
 import re
 import logging
 import os
 import asyncio
 import calendar
 from datetime import datetime, timedelta
+import psycopg2
+import psycopg2.extras
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -13,8 +14,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_GROUP_ID = -1003968149974
-# تم إزالة الحد الأقصى للمقاطع وأصبحت مفتوحة
 
 ADMIN_IDS = [ADMIN_GROUP_ID, 556767982, 8890083481]
 
@@ -23,30 +24,29 @@ bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-def get_db_path():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_dir, "creators_bot.db")
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
 
 def init_db():
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS whitelist (
-            telegram_id INTEGER PRIMARY KEY,
+            telegram_id BIGINT PRIMARY KEY,
             added_at TEXT
         )
     """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            telegram_id INTEGER PRIMARY KEY,
+            telegram_id BIGINT PRIMARY KEY,
             game_id TEXT UNIQUE,
             registered_at TEXT
         )
     """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS creator_platforms (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT,
             platform TEXT,
             status TEXT DEFAULT 'pending',
             requested_at TEXT,
@@ -55,8 +55,8 @@ def init_db():
     """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT,
             video_url TEXT UNIQUE,
             views INTEGER DEFAULT 0,
             submission_month TEXT,
@@ -74,26 +74,26 @@ def is_admin(telegram_id: int) -> bool:
 def is_allowed(telegram_id: int) -> bool:
     if telegram_id in ADMIN_IDS:
         return True
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM whitelist WHERE telegram_id = ?", (telegram_id,))
+    cursor.execute("SELECT telegram_id FROM whitelist WHERE telegram_id = %s", (telegram_id,))
     res = cursor.fetchone()
     conn.close()
     return res is not None
 
 def get_user_platforms(telegram_id: int):
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT platform, status FROM creator_platforms WHERE telegram_id = ?", (telegram_id,))
+    cursor.execute("SELECT platform, status FROM creator_platforms WHERE telegram_id = %s", (telegram_id,))
     res = cursor.fetchall()
     conn.close()
     return {row[0]: row[1] for row in res}
 
 def clean_old_submissions():
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     expiry_date = (datetime.now() - timedelta(days=50)).strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("DELETE FROM submissions WHERE created_at < ?", (expiry_date,))
+    cursor.execute("DELETE FROM submissions WHERE created_at < %s", (expiry_date,))
     conn.commit()
     conn.close()
 
@@ -163,13 +163,13 @@ async def report_scheduler():
         if now.day == last_day_of_month and now.hour == 23 and now.minute == 30:
             if last_monthly_report_month != current_month_str:
                 if ADMIN_GROUP_ID != 0:
-                    conn = sqlite3.connect(get_db_path())
+                    conn = get_db_connection()
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT u.game_id, COUNT(s.id), SUM(s.views), u.telegram_id
                         FROM users u
-                        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ?
-                        GROUP BY u.telegram_id
+                        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = %s
+                        GROUP BY u.telegram_id, u.game_id
                     """, (current_month_str,))
                     creators = cursor.fetchall()
                     conn.close()
@@ -189,7 +189,6 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
-# --- أوامر المشرفين ---
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -199,13 +198,13 @@ async def send_immediate_report(message: types.Message, state: FSMContext):
     args = message.text.split(maxsplit=1)
     target_month_str = args[1].strip() if len(args) > 1 else datetime.now().strftime("%Y-%m")
     
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT u.game_id, COUNT(s.id), SUM(s.views), u.telegram_id
         FROM users u
-        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ?
-        GROUP BY u.telegram_id
+        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = %s
+        GROUP BY u.telegram_id, u.game_id
     """, (target_month_str,))
     creators = cursor.fetchall()
     conn.close()
@@ -232,13 +231,14 @@ async def allow_user(message: types.Message, state: FSMContext):
         return
     target_id = int(args[1].strip())
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO whitelist (telegram_id, added_at) VALUES (?, ?)", (target_id, now))
+        cursor.execute("INSERT INTO whitelist (telegram_id, added_at) VALUES (%s, %s)", (target_id, now))
         conn.commit()
         await message.answer(f"✅ تمت إضافة الحساب {target_id} بنجاح.")
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
+        conn.rollback()
         await message.answer("⚠️ الحساب مضاف مسبقاً.")
     finally:
         conn.close()
@@ -252,9 +252,9 @@ async def unallow_user(message: types.Message, state: FSMContext):
     if len(args) < 2 or not args[1].strip().isdigit():
         return
     target_id = int(args[1].strip())
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM whitelist WHERE telegram_id = ?", (target_id,))
+    cursor.execute("DELETE FROM whitelist WHERE telegram_id = %s", (target_id,))
     conn.commit()
     conn.close()
     await message.answer(f"🗑 تم إزالة الحساب {target_id}.")
@@ -266,7 +266,7 @@ async def show_pending_platforms(message: types.Message, state: FSMContext):
         return
     await state.clear()
     
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT p.telegram_id, p.platform, p.requested_at, u.game_id 
@@ -304,18 +304,18 @@ async def search_user_stats(message: types.Message, state: FSMContext):
         return
     target_game_id = args[1].strip()
     current_month = datetime.now().strftime("%Y-%m")
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM users WHERE game_id = ?", (target_game_id,))
+    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
     user_info = cursor.fetchone()
     if not user_info:
         conn.close()
         await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: {target_game_id}")
         return
     telegram_id = user_info[0]
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
     submissions = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
     stats = cursor.fetchone()
     conn.close()
     v_count, total_views = stats[0] or 0, stats[1] or 0
@@ -335,9 +335,9 @@ async def admin_stats_handler(message: types.Message, state: FSMContext):
         return
     await state.clear()
     current_month = datetime.now().strftime("%Y-%m")
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT u.game_id, COUNT(s.id), SUM(s.views), u.telegram_id FROM users u LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = ? GROUP BY u.telegram_id", (current_month,))
+    cursor.execute("SELECT u.game_id, COUNT(s.id), SUM(s.views), u.telegram_id FROM users u LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = %s GROUP BY u.telegram_id, u.game_id", (current_month,))
     creators = cursor.fetchall()
     conn.close()
     if not creators:
@@ -355,12 +355,12 @@ async def admin_summary_handler(message: types.Message, state: FSMContext):
         return
     await state.clear()
     current_month = datetime.now().strftime("%Y-%m")
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT SUM(views), COUNT(id) FROM submissions WHERE submission_month = ?", (current_month,))
+    cursor.execute("SELECT SUM(views), COUNT(id) FROM submissions WHERE submission_month = %s", (current_month,))
     total_stats = cursor.fetchone()
     total_views, total_videos = total_stats[0] or 0, total_stats[1] or 0
-    cursor.execute("SELECT u.game_id, SUM(s.views) as total_v, COUNT(s.id) as v_count FROM users u JOIN submissions s ON u.telegram_id = s.telegram_id WHERE s.submission_month = ? GROUP BY u.telegram_id ORDER BY total_v DESC LIMIT 10", (current_month,))
+    cursor.execute("SELECT u.game_id, SUM(s.views) as total_v, COUNT(s.id) as v_count FROM users u JOIN submissions s ON u.telegram_id = s.telegram_id WHERE s.submission_month = %s GROUP BY u.telegram_id, u.game_id ORDER BY total_v DESC LIMIT 10", (current_month,))
     top_creators = cursor.fetchall()
     conn.close()
     summary_text = f"📈 الملخص العام لشهر {current_month}:\nإجمالي المشاهدات: {total_views:,}\nإجمالي الفيديوهات: {total_videos}\n\n🏆 أفضل صناع المحتوى:\n"
@@ -385,9 +385,9 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
         return
     await state.clear()
     if message.text and message.text.startswith("/start"):
-        conn = sqlite3.connect(get_db_path())
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+        cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
         user = cursor.fetchone()
         conn.close()
         if user:
@@ -398,7 +398,6 @@ async def global_commands_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
-# --- نظام طلبات المنصات ---
 @dp.message(F.text.contains("طلب إضافة منصة"))
 async def request_platform_start(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -428,13 +427,14 @@ async def process_platform_choice(message: types.Message, state: FSMContext):
         return
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO creator_platforms (telegram_id, platform, status, requested_at) VALUES (?, ?, 'pending', ?)", (telegram_id, platform, now))
+        cursor.execute("INSERT INTO creator_platforms (telegram_id, platform, status, requested_at) VALUES (%s, %s, 'pending', %s)", (telegram_id, platform, now))
         conn.commit()
-    except sqlite3.IntegrityError:
-        cursor.execute("UPDATE creator_platforms SET status = 'pending', requested_at = ? WHERE telegram_id = ? AND platform = ?", (now, telegram_id, platform))
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        cursor.execute("UPDATE creator_platforms SET status = 'pending', requested_at = %s WHERE telegram_id = %s AND platform = %s", (now, telegram_id, platform))
         conn.commit()
     finally:
         conn.close()
@@ -462,9 +462,9 @@ async def handle_platform_approval(callback: types.CallbackQuery):
     new_status = "approved" if action == "app" else "rejected"
     status_text = "معتمدة ✅" if action == "app" else "مرفوضة ❌"
     
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE creator_platforms SET status = ? WHERE telegram_id = ? AND platform = ?", (new_status, telegram_id, platform))
+    cursor.execute("UPDATE creator_platforms SET status = %s WHERE telegram_id = %s AND platform = %s", (new_status, telegram_id, platform))
     conn.commit()
     conn.close()
     
@@ -482,7 +482,6 @@ async def handle_platform_approval(callback: types.CallbackQuery):
     except Exception:
         pass
 
-# --- وظائف صناع المحتوى (بدون حد أقصى للمقاطع + محاكاة التحقق التلقائي) ---
 @dp.message(F.text.contains("مقاطعي هذا الشهر"))
 async def show_my_submissions(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -490,11 +489,11 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     await state.clear()
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
     rows = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
     stats = cursor.fetchone()
     conn.close()
     v_count, total_views = stats[0] or 0, stats[1] or 0
@@ -513,9 +512,9 @@ async def show_my_account(message: types.Message, state: FSMContext):
         return
     await state.clear()
     telegram_id = message.from_user.id
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
     user = cursor.fetchone()
     conn.close()
     if user:
@@ -529,9 +528,9 @@ async def start_update_game_id(message: types.Message, state: FSMContext):
         return
     await state.clear()
     telegram_id = message.from_user.id
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
     user = cursor.fetchone()
     conn.close()
     if not user:
@@ -549,14 +548,15 @@ async def process_update_game_id(message: types.Message, state: FSMContext):
         await message.answer("❌ أرسل معرّف صحيح من أرقام فقط:", reply_markup=cancel_keyboard)
         return
     telegram_id = message.from_user.id
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("UPDATE users SET game_id = ? WHERE telegram_id = ?", (new_game_id, telegram_id))
+        cursor.execute("UPDATE users SET game_id = %s WHERE telegram_id = %s", (new_game_id, telegram_id))
         conn.commit()
         await state.clear()
         await message.answer(f"✅ تم تحديث المعرّف إلى: `{new_game_id}` بنجاح مع الاحتفاظ بكافة مقاطعك!", reply_markup=main_keyboard, parse_mode="Markdown")
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
+        conn.rollback()
         await message.answer("❌ عذراً، هذا المعرّف مستخدم مسبقاً!", reply_markup=main_keyboard, parse_mode="Markdown")
         await state.clear()
     finally:
@@ -572,15 +572,16 @@ async def process_game_id(message: types.Message, state: FSMContext):
         await message.answer("يرجى إرسال أرقام فقط:", reply_markup=cancel_keyboard)
         return
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO users (telegram_id, game_id, registered_at) VALUES (?, ?, ?)", (telegram_id, game_id, now))
+        cursor.execute("INSERT INTO users (telegram_id, game_id, registered_at) VALUES (%s, %s, %s)", (telegram_id, game_id, now))
         conn.commit()
         await state.clear()
         await message.answer(f"تم ربط حسابك بمعرّف اللعبة: {game_id} بنجاح!", reply_markup=main_keyboard)
-    except sqlite3.IntegrityError:
-        cursor.execute("SELECT telegram_id FROM users WHERE game_id = ?", (game_id,))
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (game_id,))
         owner = cursor.fetchone()
         if owner and owner[0] == telegram_id:
             await state.clear()
@@ -598,11 +599,7 @@ URL_PATTERNS = {
     "Facebook": r"(https?://(?:www\.)?(?:facebook\.com|fb\.watch)/\S+)"
 }
 
-# دالة محاكاة التحقق التلقائي من المشاهدات (مكان ربط الـ API مستقبلاً)
 async def fetch_views_automatically(video_url: str) -> int:
-    # مستقبلاً هنا يتم استدعاء مكتبة أو API لجلب المشاهدات الحقيقية من المنصة
-    # كمثال توضيحي حالياً، نفترض أن البوت استخرج عدد مشاهدات (مثلاً 5000 كمبدأ تجريبي أو افتراضي)
-    # يمكنك استبدالها لاحقاً بـ Request حقيقي للرابط
     return 5000 
 
 @dp.message(F.text.contains("إرسال مقطع جديد"))
@@ -611,16 +608,15 @@ async def start_submission(message: types.Message, state: FSMContext):
         return
     await state.clear()
     telegram_id = message.from_user.id
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = ?", (telegram_id,))
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
     user = cursor.fetchone()
     conn.close()
     if not user:
         await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
         return
     
-    # تم إزالة فحص الحد الأقصى للمقاطع (أصبح مفتوحاً بالكامل)
     await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):\n*(سيتم جلب المشاهدات تلقائياً)*", reply_markup=cancel_keyboard)
     await state.set_state(Form.waiting_for_video_url)
 
@@ -650,21 +646,18 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # إعلام المستخدم بأن البوت يقوم بجلب المشاهدات تلقائياً
     processing_msg = await message.answer("⏳ جاري التحقق من الرابط وجلب المشاهدات تلقائياً...")
-    
-    # جلب المشاهدات تلقائياً (عبر الدالة المصممة)
     views = await fetch_views_automatically(clean_url)
     
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    conn = sqlite3.connect(get_db_path())
+    conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (?, ?, ?, ?, ?)", (telegram_id, clean_url, views, current_month, now))
+        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (telegram_id, clean_url, views, current_month, now))
         conn.commit()
-        cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = ? AND submission_month = ?", (telegram_id, current_month))
+        cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
         stats = cursor.fetchone()
         current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
         
@@ -675,7 +668,8 @@ async def process_video_url(message: types.Message, state: FSMContext):
             reply_markup=main_keyboard
         )
         await state.clear()
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
+        conn.rollback()
         await bot.edit_message_text("❌ هذا الرابط مسجل مسبقاً في النظام!", chat_id=message.chat.id, message_id=processing_msg.message_id, reply_markup=main_keyboard)
         await state.clear()
     finally:
@@ -686,5 +680,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
