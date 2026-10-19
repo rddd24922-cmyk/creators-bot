@@ -16,7 +16,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = -1003968149974
 # تم إزالة الحد الأقصى للمقاطع وأصبحت مفتوحة
 
-ADMIN_IDS = [ADMIN_GROUP_ID, 556767982]
+ADMIN_IDS = [ADMIN_GROUP_ID, 556767982, 8890083481]
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
