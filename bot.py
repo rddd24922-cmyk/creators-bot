@@ -363,7 +363,7 @@ async def search_user_stats(message: types.Message, state: FSMContext):
         await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: {target_game_id}")
         return
     telegram_id = user_info[0]
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
+    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
     submissions = cursor.fetchall()
     cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
     stats = cursor.fetchone()
@@ -539,7 +539,7 @@ async def show_my_submissions(message: types.Message, state: FSMContext):
     current_month = datetime.now().strftime("%Y-%m")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
+    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
     rows = cursor.fetchall()
     cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
     stats = cursor.fetchone()
@@ -619,7 +619,7 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
     current_month = datetime.now().strftime("%Y-%m")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT video_url FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
+    cursor.execute("SELECT video_url FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
     rows = cursor.fetchall()
     conn.close()
     
