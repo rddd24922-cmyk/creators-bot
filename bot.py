@@ -220,7 +220,6 @@ async def broadcast_message(message: types.Message, state: FSMContext):
             failed_count += 1
     await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال: `{failed_count}`", parse_mode="Markdown")
 
-# --- أمر إداري مباشر لتعديل مشاهدات مقطع عبر الرابط ---
 @dp.message(Command("set_views"))
 async def admin_set_views(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -611,7 +610,6 @@ async def process_update_game_id(message: types.Message, state: FSMContext):
     finally:
         conn.close()
 
-# --- ميزة تعديل مشاهدات مقطع لصانع المحتوى من القائمة ---
 @dp.message(F.text.contains("تعديل مشاهدات مقطع"))
 async def start_creator_update_views(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
@@ -633,7 +631,6 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
     for idx, row in enumerate(rows, 1):
         text += f"{idx}. {row[0]}\n"
     
-    # حفظ المقاطع مؤقتاً في الـ state
     await state.update_data(user_videos=[r[0] for r in rows])
     await message.answer(text, reply_markup=cancel_keyboard, parse_mode="Markdown")
     await state.set_state(Form.waiting_for_new_views)
@@ -646,7 +643,6 @@ async def process_creator_new_views(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_videos = data.get("user_videos", [])
     
-    # إذا كانت الخطوة الأولى (اختيار رقم الفيديو)
     if "selected_video" not in data:
         if not text.isdigit() or int(text) < 1 or int(text) > len(user_videos):
             await message.answer("❌ رقم غير صحيح. اختر رقماً صحيحاً من القائمة:", reply_markup=cancel_keyboard)
@@ -656,7 +652,6 @@ async def process_creator_new_views(message: types.Message, state: FSMContext):
         await message.answer(f"📊 الرابط المختار:\n`{selected_url}`\n\nالآن أرسل **عدد المشاهدات الجديد** (أرقام صحيحة فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
         return
         
-    # إذا كانت الخطوة الثانية (إرسال عدد المشاهدات الجديد)
     if not text.isdigit():
         await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
         return
@@ -768,7 +763,11 @@ async def process_video_url(message: types.Message, state: FSMContext):
         current_rank = calculate_rank(stats[1] or 0, stats[0] or 1)
         
         await message.answer(
-            f"✅ **تم تسجيل المقطع بنجاح فوري!**\n📹 المنصة: {matched_platform}\n📊 إجمالي مقاطعة هذا الشهر: {stats[0]}\nرتبتك الحالية: {current_rank}\n\n*(يمكنك تحديث مشاهدات مقاطعك في أي وقت من زر "تعديل مشاهدات مقطع")*",
+            f"✅ **تم تسجيل المقطع بنجاح فوري!**\n"
+            f"📹 المنصة: {matched_platform}\n"
+            f"📊 إجمالي مقاطعة هذا الشهر: {stats[0]}\n"
+            f"رتبتك الحالية: {current_rank}\n\n"
+            f"*(يمكنك تحديث مشاهدات مقاطعك في أي وقت من زر \"تعديل مشاهدات مقطع\")*",
             reply_markup=main_keyboard,
             parse_mode="Markdown"
         )
@@ -785,4 +784,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.main() if hasattr(asyncio, "main") else asyncio.run(main())
+    asyncio.run(main())
