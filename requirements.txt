@@ -1,4 +1,2 @@
-aiogram==3.4.1 --only-binary=:all:
-aiohttp --only-binary=:all:
-pydantic --only-binary=:all:
-pydantic-core --only-binary=:all:
+aiogram
+aiohttp
