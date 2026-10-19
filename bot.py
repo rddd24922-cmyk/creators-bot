@@ -189,6 +189,47 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
+# --- أمر الإرسال الجماعي للمشرفين ---
+@dp.message(Command("broadcast"))
+async def broadcast_message(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
+        return
+    await state.clear()
+    
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("⚠️ طريقة الاستخدام:\n`/broadcast [النص الذي تريد إرساله]`", parse_mode="Markdown")
+        return
+        
+    broadcast_text = args[1].strip()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id FROM users")
+    users = cursor.fetchall()
+    conn.close()
+    
+    if not users:
+        await message.answer("⚠️ لا توجد أي حسابات مسجلة في البوت حالياً.")
+        return
+        
+    sent_count = 0
+    failed_count = 0
+    
+    status_msg = await message.answer(f"⏳ جاري إرسال الرسالة إلى {len(users)} صانع محتوى...")
+    
+    for user in users:
+        t_id = user[0]
+        try:
+            await bot.send_message(t_id, f"📢 **إشعار من الإدارة:**\n\n{broadcast_text}", parse_mode="Markdown")
+            sent_count += 1
+            await asyncio.sleep(0.1) # لتفادي الحظر المؤقت من تيليجرام
+        except Exception:
+            failed_count += 1
+            
+    await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال (حظروا البوت): `{failed_count}`", parse_mode="Markdown")
+
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
