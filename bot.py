@@ -18,7 +18,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_GROUP_ID = -1003968149974
 
-ADMIN_IDS = [ADMIN_GROUP_ID, 556767982, 8890083481]
+ADMIN_IDS = [ADMIN_GROUP_ID, 556767982, 8890083481, 728021050]
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -214,7 +214,6 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
-# --- لوحة تحكم المشرفين التفاعلية (أمر /admin أو /panel) ---
 @dp.message(Command("admin", "panel"))
 async def admin_panel_handler(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -237,17 +236,10 @@ async def admin_panel_handler(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-@dp.callback_query(F.data.startswith("adm_"))
-async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("ليس لديك صلاحية.", show_alert=True)
-        return
-        
-    action = callback.data.split("_")[1]
-    
-    if action == "stats":
-        await callback.answer()
-        current_month = datetime.now().strftime("%Y-%m")
+# --- دالة موحدة ومضمونة لعرض التقرير الشامل (تستدعيها بالأمر أو بالزر) ---
+async def execute_stats_report(target_message: types.Message):
+    current_month = datetime.now().strftime("%Y-%m")
+    try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT telegram_id, game_id FROM users ORDER BY registered_at ASC")
@@ -255,7 +247,7 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         
         if not users:
             conn.close()
-            await callback.message.answer("⚠️ لا توجد أي حسابات مسجلة في النظام حالياً.")
+            await target_message.answer("⚠️ لا توجد أي حسابات مسجلة في النظام حالياً.")
             return
             
         report = f"📊 **التفصيل الشامل لإنجازات صناع المحتوى (شهر {current_month}):**\n\n"
@@ -291,10 +283,25 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         
         if len(report) > 4000:
             for chunk in [report[i:i+4000] for i in range(0, len(report), 4000)]:
-                await callback.message.answer(chunk, disable_web_page_preview=True, parse_mode="Markdown")
+                await target_message.answer(chunk, disable_web_page_preview=True, parse_mode="Markdown")
         else:
-            await callback.message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
+            await target_message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
+            
+    except Exception as e:
+        logging.error(f"Error in execute_stats_report: {traceback.format_exc()}")
+        await target_message.answer(f"❌ حدث خطأ أثناء جلب التقرير:\n`{str(e)}`", parse_mode="Markdown")
 
+@dp.callback_query(F.data.startswith("adm_"))
+async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("ليس لديك صلاحية.", show_alert=True)
+        return
+        
+    action = callback.data.split("_")[1]
+    
+    if action == "stats":
+        await callback.answer()
+        await execute_stats_report(callback.message)
     elif action == "platforms":
         await callback.answer()
         await show_pending_platforms_callback(callback.message)
@@ -302,6 +309,13 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         await callback.answer()
         await callback.message.answer("📢 أرسل الآن النص الذي تريد بثه لجميع صناع المحتوى:", reply_markup=cancel_keyboard)
         await state.set_state(Form.waiting_for_broadcast)
+
+@dp.message(Command("stats"))
+async def show_all_creators_detailed_stats(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await execute_stats_report(message)
 
 @dp.message(Form.waiting_for_broadcast)
 async def process_admin_broadcast_input(message: types.Message, state: FSMContext):
@@ -596,63 +610,6 @@ async def show_pending_platforms(message: types.Message, state: FSMContext):
         return
     await state.clear()
     await show_pending_platforms_callback(message)
-
-# --- الأمر الشامل الجديد لعرض كافة اللاعبين ومقاطعهم ومشاهداتهم (بديل /user) ---
-async def show_all_creators_detailed_stats_callback(message: types.Message):
-    current_month = datetime.now().strftime("%Y-%m")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id, game_id FROM users ORDER BY registered_at ASC")
-    users = cursor.fetchall()
-    
-    if not users:
-        conn.close()
-        await message.answer("⚠️ لا توجد أي حسابات مسجلة في النظام حالياً.")
-        return
-        
-    report = f"📊 **التفصيل الشامل لإنجازات صناع المحتوى (شهر {current_month}):**\n\n"
-    
-    for idx, u in enumerate(users, 1):
-        t_id, g_id = u[0], u[1] or "غير مسجل"
-        
-        cursor.execute("""
-            SELECT video_url, views FROM submissions 
-            WHERE telegram_id = %s AND submission_month = %s 
-            ORDER BY id ASC
-        """, (t_id, current_month))
-        subs = cursor.fetchall()
-        
-        v_count = len(subs)
-        total_views = sum(s[1] for s in subs)
-        rank = calculate_rank(total_views, v_count)
-        
-        report += f"━━━━━━━━━━━━━━━━━━━━\n"
-        report += f"{idx}. 🎮 **Game ID:** `{g_id}`\n"
-        report += f"🆔 **Telegram ID:** `{t_id}`\n"
-        report += f"👁 **إجمالي المشاهدات:** {total_views:,} | 📹 **المقاطع:** {v_count}\n"
-        report += f"🎖 **الرتبة:** {rank}\n"
-        
-        if subs:
-            report += "🎬 **المقاطع المسجلة:**\n"
-            for s_idx, sub in enumerate(subs, 1):
-                report += f"   {s_idx}. {sub[0]} (👁 {sub[1]:,})\n"
-        else:
-            report += "   ⚠️ لا توجد مقاطع لهذا الشهر.\n"
-            
-    conn.close()
-    
-    if len(report) > 4000:
-        for chunk in [report[i:i+4000] for i in range(0, len(report), 4000)]:
-            await message.answer(chunk, disable_web_page_preview=True, parse_mode="Markdown")
-    else:
-        await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
-
-@dp.message(Command("stats"))
-async def show_all_creators_detailed_stats(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    await show_all_creators_detailed_stats_callback(message)
 
 @dp.message(Command("last_month_user"))
 async def search_last_month_user_stats(message: types.Message, state: FSMContext):
