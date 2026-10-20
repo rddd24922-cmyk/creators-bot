@@ -17,7 +17,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_GROUP_ID = -1003968149974
 
-ADMIN_IDS = [ADMIN_GROUP_ID, 556767982]
+ADMIN_IDS = [ADMIN_GROUP_ID, 556767982, 8890083481]
 
 # متغير للتحكم بقفل أو فتح البوت بالكامل
 SUBMISSIONS_LOCKED = False
@@ -215,7 +215,6 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
-# --- أوامر قفل وفتح استقبال المقاطع والتعديلات ---
 @dp.message(Command("lock"))
 async def lock_submissions(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -446,13 +445,67 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     conn.close()
     v_count, total_views = stats[0] or 0, stats[1] or 0
     rank = calculate_rank(total_views, v_count)
-    report = f"👤 تقرير إنجازات صانع المحتوى ({target_game_id}):\n🆔 Telegram ID: `{telegram_id}`\nإجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nالرتبة: {rank}\n\n"
+    report = f"👤 تقرير إنجازات صانع المحتوى ({target_game_id}) - الشهر الحالي ({current_month}):\n🆔 Telegram ID: `{telegram_id}`\nإجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nالرتبة: {rank}\n\n"
     if submissions:
         report += "سجل المقاطع:\n"
         for idx, sub in enumerate(submissions, 1):
             report += f"{idx}. {sub[0]} - المشاهدات: {sub[1]:,}\n"
     else:
         report += "لا توجد مقاطع مرفوعة هذا الشهر."
+    await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
+
+# --- أمر إداري جديد لمعرفة إنجازات صانع المحتوى للشهر الماضي بالتفصيل ---
+@dp.message(Command("last_month_user"))
+async def search_last_month_user_stats(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("⚠️ طريقة الاستخدام:\n`/last_month_user [Game_ID]`", parse_mode="Markdown")
+        return
+        
+    target_game_id = args[1].strip()
+    
+    # حساب صيغة الشهر الماضي تلقائياً (YYYY-MM)
+    now = datetime.now()
+    first_day_of_current_month = now.replace(day=1)
+    last_day_of_prev_month = first_day_of_current_month - timedelta(days=1)
+    prev_month_str = last_day_of_prev_month.strftime("%Y-%m")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
+    user_info = cursor.fetchone()
+    if not user_info:
+        conn.close()
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: `{target_game_id}`", parse_mode="Markdown")
+        return
+        
+    telegram_id = user_info[0]
+    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, prev_month_str))
+    submissions = cursor.fetchall()
+    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, prev_month_str))
+    stats = cursor.fetchone()
+    conn.close()
+    
+    v_count, total_views = stats[0] or 0, stats[1] or 0
+    rank = calculate_rank(total_views, v_count)
+    
+    report = f"📜 **تقرير إنجازات صانع المحتوى للشهر الماضي ({prev_month_str}):**\n"
+    report += f"🎮 **Game ID:** `{target_game_id}`\n"
+    report += f"🆔 **Telegram ID:** `{telegram_id}`\n"
+    report += f"👁 **إجمالي المشاهدات:** {total_views:,}\n"
+    report += f"📹 **عدد المقاطع:** {v_count}\n"
+    report += f"🎖 **الرتبة المستحقة:** {rank}\n\n"
+    
+    if submissions:
+        report += "🎬 **سجل مقاطع الشهر الماضي:**\n"
+        for idx, sub in enumerate(submissions, 1):
+            report += f"{idx}. {sub[0]}\n   👁 المشاهدات: **{sub[1]:,}**\n"
+    else:
+        report += "⚠️ لا توجد أي مقاطع مسجلة لهذا اللاعب في الشهر الماضي."
+        
     await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
 
 @dp.message(Command("admin_stats"))
@@ -686,13 +739,11 @@ async def process_update_game_id(message: types.Message, state: FSMContext):
     finally:
         conn.close()
 
-# --- تعديل المشاهدات: أصبح الآن يخضع لحالة القفل أيضاً ---
 @dp.message(F.text.contains("تعديل مشاهدات مقطع"))
 async def start_creator_update_views(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
         
-    # فحص القفل لمنع التعديل وقت إغلاق البوت
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nلا يمكن تعديل مشاهدات المقاطع في الوقت الحالي.", parse_mode="Markdown")
         return
