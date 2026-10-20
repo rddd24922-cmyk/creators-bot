@@ -306,7 +306,7 @@ async def process_specific_creator_stats(message: types.Message, state: FSMConte
             for s_idx, sub in enumerate(subs, 1):
                 report += f"   {s_idx}. {sub[0]} (👁 {sub[1]:,})\n"
         else:
-            report += "⚠️ لا توجد مقاطع مسجلة لهذا اللاعب في هذا الشهر.\n"
+            report += "⚠️ لا توجد مقاطع مسجلة لهذا اللاعب في الشهر الماضي.\n"
             
         await message.answer(report, disable_web_page_preview=True)
         
@@ -343,7 +343,7 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         await state.set_state(Form.waiting_for_remove_video_url)
     elif action == "setviews":
         await callback.answer()
-        await callback.message.answer("⚙️ أرسل البيانات بالشكل التالي:\n`[رابط_المقطع] [عدد_المشاهدات_الجديد]`", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await callback.message.answer("⚙️ أرسل البيانات بأي ترتيب تريده (الرابط وعدد المشاهدات):", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_set_views_input)
     elif action == "allow":
         await callback.answer()
@@ -467,17 +467,27 @@ async def receive_set_views_input(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     await state.clear()
-    args = message.text.split()
-    if len(args) < 3 or not args[-1].isdigit():
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`[رابط_المقطع] [عدد_المشاهدات_الجديد]`", parse_mode="Markdown")
+    args = message.text.strip().split()
+    if len(args) < 2:
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`[رابط_المقطع] [عدد_المشاهدات]`", parse_mode="Markdown")
         return
-    new_views = int(args[-1].strip())
-    video_url = " ".join(args[:-1]).strip()
+    
+    # فحص ذكي جداً لفصل الرابط عن عدد المشاهدات بغض النظر عن الترتيب
+    video_url = None
+    new_views = None
+    
+    for arg in args:
+        if arg.isdigit():
+            new_views = int(arg)
+        else:
+            video_url = arg
+            
+    if not video_url or new_views is None:
+        await message.answer("❌ يرجى التأكد من كتابة الرابط وعدد المشاهدات الصحيح بشكل سليم.", parse_mode="Markdown")
+        return
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # جلب telegram_id لصانع المحتوى قبل التحديث لإرسال إشعار له
     cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
     sub_row = cursor.fetchone()
     
@@ -566,8 +576,6 @@ async def receive_remove_platform_input(message: types.Message, state: FSMContex
     if cursor.rowcount > 0:
         conn.commit()
         conn.close()
-        
-        # إرسال إشعار لصانع المحتوى بأنه تمت إزالة منصته
         try:
             await bot.send_message(
                 telegram_id, 
@@ -576,7 +584,6 @@ async def receive_remove_platform_input(message: types.Message, state: FSMContex
             )
         except Exception:
             pass
-            
         await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح وإبلاغه.", parse_mode="Markdown")
     else:
         conn.close()
@@ -855,11 +862,21 @@ async def admin_set_views(message: types.Message, state: FSMContext):
         return
     await state.clear()
     args = message.text.split()
-    if len(args) < 3 or not args[2].isdigit():
+    if len(args) < 3:
         await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/set_views [رابط_المقطع] [عدد_المشاهدات_الجديد]`", parse_mode="Markdown")
         return
-    video_url = args[1].strip()
-    new_views = int(args[2].strip())
+    
+    video_url = None
+    new_views = None
+    for arg in args[1:]:
+        if arg.isdigit():
+            new_views = int(arg)
+        else:
+            video_url = arg
+            
+    if not video_url or new_views is None:
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/set_views [رابط_المقطع] [عدد_المشاهدات_الجديد]`", parse_mode="Markdown")
+        return
     
     conn = get_db_connection()
     cursor = conn.cursor()
