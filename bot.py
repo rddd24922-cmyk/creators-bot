@@ -490,6 +490,7 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # 1. البحث المرن في جدول المستخدمين للحصول على Telegram ID الأساسي
     cursor.execute("""
         SELECT telegram_id, game_id FROM users 
         WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
@@ -497,29 +498,50 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     """, (target_input, target_input))
     user_info = cursor.fetchone()
     
-    if not user_info:
-        conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
-        return
-        
-    telegram_id = user_info[0]
-    game_id_val = user_info[1] or "غير مسجل"
+    telegram_id = None
+    game_id_val = "غير مسجل"
     
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
+    if user_info:
+        telegram_id = user_info[0]
+        game_id_val = user_info[1] or "غير مسجل"
+    else:
+        # 2. إذا لم يوجد في جدول users، نبحث مباشرة في جدول submissions بناءً على المدخل (قد يكون Telegram ID مباشر)
+        if target_input.isdigit():
+            telegram_id = int(target_input)
+            
+    if not telegram_id:
+        conn.close()
+        await message.answer(f"❌ لم يتم العثور على أي بيانات مسجلة بمعرّف: `{target_input}`", parse_mode="Markdown")
+        return
+    
+    # جلب المقاطع بناءً على Telegram ID أو المعرّف القديم المحتمل لضمان عدم ضياع أي مقطع
+    cursor.execute("""
+        SELECT video_url, views, created_at FROM submissions 
+        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
+        AND submission_month = %s 
+        ORDER BY id ASC
+    """, (telegram_id, target_input, current_month))
     submissions = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
+    
+    cursor.execute("""
+        SELECT COUNT(*), SUM(views) FROM submissions 
+        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
+        AND submission_month = %s
+    """, (telegram_id, target_input, current_month))
     stats = cursor.fetchone()
     conn.close()
     
-    v_count, total_views = stats[0] or 0, stats[1] or 0
+    v_count, total_views = (stats[0] if stats and stats[0] else 0), (stats[1] if stats and stats[1] else 0)
     rank = calculate_rank(total_views, v_count)
+    
     report = f"👤 **تقرير صانع المحتوى:**\n🎮 **Game ID:** `{game_id_val}`\n🆔 **Telegram ID:** `{telegram_id}`\n👁 **إجمالي المشاهدات:** {total_views:,}\n📹 **عدد الفيديوهات:** {v_count}\n🎖 **الرتبة:** {rank}\n\n"
     if submissions:
         report += "🎬 **سجل المقاطع:**\n"
         for idx, sub in enumerate(submissions, 1):
             report += f"{idx}. {sub[0]} - المشاهدات: {sub[1]:,}\n"
     else:
-        report += "لا توجد مقاطع مرفوعة هذا الشهر."
+        report += "⚠️ لا توجد مقاطع مرفوعة هذا الشهر لهذا المستخدم."
+        
     await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
 
 @dp.message(Command("last_month_user"))
@@ -547,21 +569,38 @@ async def search_last_month_user_stats(message: types.Message, state: FSMContext
     """, (target_input, target_input))
     user_info = cursor.fetchone()
     
-    if not user_info:
-        conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
-        return
-        
-    telegram_id = user_info[0]
-    game_id_val = user_info[1] or "غير مسجل"
+    telegram_id = None
+    game_id_val = "غير مسجل"
     
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, prev_month_str))
+    if user_info:
+        telegram_id = user_info[0]
+        game_id_val = user_info[1] or "غير مسجل"
+    else:
+        if target_input.isdigit():
+            telegram_id = int(target_input)
+            
+    if not telegram_id:
+        conn.close()
+        await message.answer(f"❌ لم يتم العثور على أي بيانات مسجلة بمعرّف: `{target_input}`", parse_mode="Markdown")
+        return
+    
+    cursor.execute("""
+        SELECT video_url, views, created_at FROM submissions 
+        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
+        AND submission_month = %s 
+        ORDER BY id ASC
+    """, (telegram_id, target_input, prev_month_str))
     submissions = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, prev_month_str))
+    
+    cursor.execute("""
+        SELECT COUNT(*), SUM(views) FROM submissions 
+        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
+        AND submission_month = %s
+    """, (telegram_id, target_input, prev_month_str))
     stats = cursor.fetchone()
     conn.close()
     
-    v_count, total_views = stats[0] or 0, stats[1] or 0
+    v_count, total_views = (stats[0] if stats and stats[0] else 0), (stats[1] if stats and stats[1] else 0)
     rank = calculate_rank(total_views, v_count)
     
     report = f"📜 **تقرير إنجازات صانع المحتوى للشهر الماضي ({prev_month_str}):**\n"
