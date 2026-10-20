@@ -233,6 +233,37 @@ async def unlock_submissions(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("🔓 **تم فتح البوت بنجاح.**\nيمكن لصناع المحتوى الآن إرسال وتعديل مشاهدات مقاطعهم كالمعتاد.", parse_mode="Markdown")
 
+@dp.message(Command("send"))
+async def send_direct_message(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
+        return
+    await state.clear()
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/send [Game_ID] [نص الرسالة]`", parse_mode="Markdown")
+        return
+    
+    target_game_id = args[1].strip()
+    msg_text = args[2].strip()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
+    user_row = cursor.fetchone()
+    conn.close()
+    
+    if not user_row:
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: `{target_game_id}`", parse_mode="Markdown")
+        return
+        
+    telegram_id = user_row[0]
+    try:
+        await bot.send_message(telegram_id, f"📬 **رسالة خاصة من الإدارة:**\n\n{msg_text}", parse_mode="Markdown")
+        await message.answer(f"✅ تم إرسال الرسالة إلى صانع المحتوى (Game ID: `{target_game_id}`) بنجاح!", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ فشل إرسال الرسالة:\n`{str(e)}`", parse_mode="Markdown")
+
 @dp.message(Command("broadcast"))
 async def broadcast_message(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -744,7 +775,7 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
     await state.clear()
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
-        await message.answer("عذراً، البوت مقفل حالياً من قِبل الإدارة. لا يمكن تعديل مشاهدات المقاطع في الوقت الحالي.")
+        await message.answer("🔒 عذراً، البوت مقفل حالياً من قِبل الإدارة. لا يمكن تعديل مشاهدات المقاطع في الوقت الحالي.")
         return
 
     telegram_id = message.from_user.id
@@ -766,7 +797,6 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
             text += f"{idx}. {row[0]}\n"
         
         await state.update_data(user_videos=[r[0] for r in rows])
-        # إرسال الرسالة بدون parse_mode لتجنب أخطاء روابط إنستغرام أو الرموز الخاصة
         await message.answer(text, reply_markup=cancel_keyboard)
         await state.set_state(Form.waiting_for_new_views)
     except Exception as e:
@@ -780,7 +810,7 @@ async def process_creator_new_views(message: types.Message, state: FSMContext):
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await state.clear()
-        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة.**", parse_mode="Markdown", reply_markup=main_keyboard)
+        await message.answer("🔒 عذراً، تم قفل البوت من قِبل الإدارة.")
         return
 
     text = message.text.strip()
@@ -793,7 +823,7 @@ async def process_creator_new_views(message: types.Message, state: FSMContext):
             return
         selected_url = user_videos[int(text) - 1]
         await state.update_data(selected_video=selected_url)
-        await message.answer(f"📊 الرابط المختار:\n`{selected_url}`\n\nالآن أرسل **عدد المشاهدات الجديد** (أرقام صحيحة فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await message.answer(f"📊 الرابط المختار:\n`{selected_url}`\n\nالنان أرسل **عدد المشاهدات الجديد** (أرقام صحيحة فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
         return
         
     if not text.isdigit():
@@ -857,7 +887,7 @@ async def start_submission(message: types.Message, state: FSMContext):
     await state.clear()
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
-        await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nيرجى الانتظار حتى يتم فتح البوت مجدداً.", parse_mode="Markdown")
+        await message.answer("🔒 عذراً، البوت مقفل حالياً من قِبل الإدارة. يرجى الانتظار حتى يتم فتح البوت مجدداً.")
         return
 
     telegram_id = message.from_user.id
@@ -880,7 +910,7 @@ async def process_video_url(message: types.Message, state: FSMContext):
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await state.clear()
-        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة.**", parse_mode="Markdown", reply_markup=main_keyboard)
+        await message.answer("🔒 عذراً، تم قفل البوت من قِبل الإدارة.", reply_markup=main_keyboard)
         return
 
     text = message.text.strip()
@@ -916,12 +946,12 @@ async def process_manual_views(message: types.Message, state: FSMContext):
         
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await state.clear()
-        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة.**", parse_mode="Markdown", reply_markup=main_keyboard)
+        await message.answer("🔒 عذراً، البوت مقفل حالياً من قِبل الإدارة.", reply_markup=main_keyboard)
         return
 
     text = message.text.strip()
     if not text.isdigit():
-        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_cancel_keyboard=True, reply_markup=cancel_keyboard)
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
         return
         
     views = int(text)
