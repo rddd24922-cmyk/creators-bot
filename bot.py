@@ -92,7 +92,8 @@ def get_user_platforms(telegram_id: int):
 def clean_old_submissions():
     conn = get_db_connection()
     cursor = conn.cursor()
-    expiry_date = (datetime.now() - timedelta(days=50)).strftime("%Y-%m-%d %H:%M:%S")
+    # تم تعديل فترة الحذف التلقائي لتصبح 90 يوماً
+    expiry_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("DELETE FROM submissions WHERE created_at < %s", (expiry_date,))
     conn.commit()
     conn.close()
@@ -102,6 +103,7 @@ class Form(StatesGroup):
     waiting_for_update_game_id = State()
     waiting_for_platform_choice = State()
     waiting_for_video_url = State()
+    waiting_for_manual_views = State()
     waiting_for_new_views = State()
 
 def calculate_rank(views, videos_count):
@@ -749,25 +751,44 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
+    # حفظ الرابط مؤقتاً والانتقال لطلب عدد المشاهدات فوراً
+    await state.update_data(pending_url=clean_url, matched_platform=matched_platform)
+    await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالي لهذا المقطع (أرقام صحيحة فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
+    await state.set_state(Form.waiting_for_manual_views)
+
+@dp.message(Form.waiting_for_manual_views)
+async def process_manual_views(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
+        return
+        
+    views = int(text)
+    data = await state.get_data()
+    clean_url = data.get("pending_url")
+    matched_platform = data.get("matched_platform")
+    telegram_id = message.from_user.id
+    
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    initial_views = 0
     
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (telegram_id, clean_url, initial_views, current_month, now))
+        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (telegram_id, clean_url, views, current_month, now))
         conn.commit()
         cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
         stats = cursor.fetchone()
-        current_rank = calculate_rank(stats[1] or 0, stats[0] or 1)
+        current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
         
         await message.answer(
-            f"✅ **تم تسجيل المقطع بنجاح فوري!**\n"
+            f"✅ **تم تسجيل المقطع والمشاهدات بنجاح!**\n"
             f"📹 المنصة: {matched_platform}\n"
-            f"📊 إجمالي مقاطعة هذا الشهر: {stats[0]}\n"
-            f"رتبتك الحالية: {current_rank}\n\n"
-            f"*(يمكنك تحديث مشاهدات مقاطعك في أي وقت من زر \"تعديل مشاهدات مقطع\")*",
+            f"👁 المشاهدات المسجلة: {views:,}\n"
+            f"📊 إجمالي مقاطعك هذا الشهر: {stats[0]}\n"
+            f"رتبتك الحالية: {current_rank}",
             reply_markup=main_keyboard,
             parse_mode="Markdown"
         )
