@@ -306,7 +306,7 @@ async def process_specific_creator_stats(message: types.Message, state: FSMConte
             for s_idx, sub in enumerate(subs, 1):
                 report += f"   {s_idx}. {sub[0]} (👁 {sub[1]:,})\n"
         else:
-            report += "⚠️ لا توجد مقاطع مسجلة لهذا اللاعب في الشهر الماضي.\n"
+            report += "⚠️ لا توجد مقاطع مسجلة لهذا اللاعب في هذا الشهر.\n"
             
         await message.answer(report, disable_web_page_preview=True)
         
@@ -343,7 +343,7 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         await state.set_state(Form.waiting_for_remove_video_url)
     elif action == "setviews":
         await callback.answer()
-        await callback.message.answer("⚙️ أرسل البيانات بأي ترتيب تريده (الرابط وعدد المشاهدات):", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await callback.message.answer("⚙️ أرسل **رابط المقطع** أولاً:", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_set_views_input)
     elif action == "allow":
         await callback.answer()
@@ -466,51 +466,59 @@ async def receive_remove_video_url(message: types.Message, state: FSMContext):
 async def receive_set_views_input(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    await state.clear()
-    args = message.text.strip().split()
-    if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`[رابط_المقطع] [عدد_المشاهدات]`", parse_mode="Markdown")
+
+    text = message.text.strip()
+    data = await state.get_data()
+
+    if "target_video_url" not in data:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT video_url FROM submissions WHERE video_url = %s", (text,))
+        exists = cursor.fetchone()
+        conn.close()
+
+        if not exists:
+            await message.answer("❌ هذا الرابط غير مسجل في النظام. أرسل **رابط المقطع** الصحيح:", reply_markup=cancel_keyboard)
+            return
+
+        await state.update_data(target_video_url=text)
+        await message.answer(f"📊 الرابط المختار:\n`{text}`\n\nالآن أرسل **عدد المشاهدات الجديد** (أرقام فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
         return
-    
-    # فحص ذكي جداً لفصل الرابط عن عدد المشاهدات بغض النظر عن الترتيب
-    video_url = None
-    new_views = None
-    
-    for arg in args:
-        if arg.isdigit():
-            new_views = int(arg)
-        else:
-            video_url = arg
-            
-    if not video_url or new_views is None:
-        await message.answer("❌ يرجى التأكد من كتابة الرابط وعدد المشاهدات الصحيح بشكل سليم.", parse_mode="Markdown")
+
+    if not text.isdigit():
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
         return
-    
+
+    new_views = int(text)
+    video_url = data.get("target_video_url")
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
     sub_row = cursor.fetchone()
-    
+
     cursor.execute("UPDATE submissions SET views = %s WHERE video_url = %s", (new_views, video_url))
     if cursor.rowcount > 0:
         conn.commit()
         conn.close()
-        
+
         if sub_row:
             creator_telegram_id = sub_row[0]
             try:
                 await bot.send_message(
-                    creator_telegram_id, 
-                    f"⚙️ **تنبيه من الإدارة:**\nتم تعديل مشاهدات مقطعك:\n`{video_url}`\nلتصبح المشاهدات الجديدة: **{new_views:,}** مشاهدة.", 
+                    creator_telegram_id,
+                    f"⚙️ **تنبيه من الإدارة:**\nتم تعديل مشاهدات مقطعك:\n`{video_url}`\nلتصبح المشاهدات الجديدة: **{new_views:,}** مشاهدة.",
                     parse_mode="Markdown"
                 )
             except Exception:
                 pass
-                
+
+        await state.clear()
         await message.answer(f"✅ تم تحديث مشاهدات المقطع إلى: **{new_views:,}** مشاهدة بنجاح وإبلاغ صاحب المحتوى!")
     else:
         conn.close()
-        await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
+        await state.clear()
+        await message.answer("❌ حدث خطأ، لم يتم العثور على الرابط مسجلاً.")
 
 @dp.message(Form.waiting_for_allow_id)
 async def receive_allow_id(message: types.Message, state: FSMContext):
