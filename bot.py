@@ -476,13 +476,31 @@ async def receive_set_views_input(message: types.Message, state: FSMContext):
     
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # جلب telegram_id لصانع المحتوى قبل التحديث لإرسال إشعار له
+    cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
+    sub_row = cursor.fetchone()
+    
     cursor.execute("UPDATE submissions SET views = %s WHERE video_url = %s", (new_views, video_url))
     if cursor.rowcount > 0:
         conn.commit()
-        await message.answer(f"✅ تم تحديث مشاهدات المقطع إلى: **{new_views:,}** مشاهدة بنجاح!")
+        conn.close()
+        
+        if sub_row:
+            creator_telegram_id = sub_row[0]
+            try:
+                await bot.send_message(
+                    creator_telegram_id, 
+                    f"⚙️ **تنبيه من الإدارة:**\nتم تعديل مشاهدات مقطعك:\n`{video_url}`\nلتصبح المشاهدات الجديدة: **{new_views:,}** مشاهدة.", 
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+                
+        await message.answer(f"✅ تم تحديث مشاهدات المقطع إلى: **{new_views:,}** مشاهدة بنجاح وإبلاغ صاحب المحتوى!")
     else:
+        conn.close()
         await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
-    conn.close()
 
 @dp.message(Form.waiting_for_allow_id)
 async def receive_allow_id(message: types.Message, state: FSMContext):
@@ -544,20 +562,28 @@ async def receive_remove_platform_input(message: types.Message, state: FSMContex
         return
         
     telegram_id = user_row[0]
-    
-    # حذف المنصة بمطابقة غير حساسة لحالة الحروف (ILIKE) لضمان إزالتها بغض النظر عن الحروف الكبيرة والصغيرة
     cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform ILIKE %s", (telegram_id, platform))
     if cursor.rowcount > 0:
         conn.commit()
-        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح.", parse_mode="Markdown")
+        conn.close()
+        
+        # إرسال إشعار لصانع المحتوى بأنه تمت إزالة منصته
+        try:
+            await bot.send_message(
+                telegram_id, 
+                f"⚠️ **تنبيه من الإدارة:**\nتمت إزالة اعتماد منصة **{platform}** الخاصة بك من النظام.", 
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+            
+        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح وإبلاغه.", parse_mode="Markdown")
     else:
         conn.close()
-        # جلب المنصات المسجلة فعلياً لهذا اللاعب لمساعدة المشرف
         actual_plats = get_user_platforms(telegram_id)
         plats_list = ", ".join(actual_plats.keys()) if actual_plats else "لا توجد منصات مسجلة"
         await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.\nالمنصات المسجلة فعلياً لديه هي: ({plats_list})", parse_mode="Markdown")
         return
-    conn.close()
 
 @dp.message(Form.waiting_for_last_month_input)
 async def receive_last_month_input(message: types.Message, state: FSMContext):
@@ -806,14 +832,22 @@ async def admin_remove_platform(message: types.Message, state: FSMContext):
     cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform ILIKE %s", (telegram_id, platform))
     if cursor.rowcount > 0:
         conn.commit()
-        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح.", parse_mode="Markdown")
+        conn.close()
+        try:
+            await bot.send_message(
+                telegram_id, 
+                f"⚠️ **تنبيه من الإدارة:**\nتمت إزالة اعتماد منصة **{platform}** الخاصة بك من النظام.", 
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح وإبلاغه.", parse_mode="Markdown")
     else:
         conn.close()
         actual_plats = get_user_platforms(telegram_id)
         plats_list = ", ".join(actual_plats.keys()) if actual_plats else "لا توجد منصات مسجلة"
         await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.\nالمنصات المسجلة فعلياً لديه هي: ({plats_list})", parse_mode="Markdown")
         return
-    conn.close()
 
 @dp.message(Command("set_views"))
 async def admin_set_views(message: types.Message, state: FSMContext):
@@ -829,13 +863,29 @@ async def admin_set_views(message: types.Message, state: FSMContext):
     
     conn = get_db_connection()
     cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
+    sub_row = cursor.fetchone()
+    
     cursor.execute("UPDATE submissions SET views = %s WHERE video_url = %s", (new_views, video_url))
     if cursor.rowcount > 0:
         conn.commit()
-        await message.answer(f"✅ تم تحديث مشاهدات المقطع إلى: **{new_views:,}** مشاهدة بنجاح!")
+        conn.close()
+        
+        if sub_row:
+            creator_telegram_id = sub_row[0]
+            try:
+                await bot.send_message(
+                    creator_telegram_id, 
+                    f"⚙️ **تنبيه من الإدارة:**\nتم تعديل مشاهدات مقطعك:\n`{video_url}`\nلتصبح المشاهدات الجديدة: **{new_views:,}** مشاهدة.", 
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+                
+        await message.answer(f"✅ تم تحديث مشاهدات المقطع إلى: **{new_views:,}** مشاهدة بنجاح وإبلاغ صاحب المحتوى!")
     else:
+        conn.close()
         await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
-    conn.close()
 
 @dp.message(Command("report"))
 async def send_immediate_report(message: types.Message, state: FSMContext):
