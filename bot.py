@@ -902,4 +902,58 @@ async def process_video_url(message: types.Message, state: FSMContext):
     await state.set_state(Form.waiting_for_manual_views)
 
 @dp.message(Form.waiting_for_manual_views)
-async def process_manual_views(message: types.Message, state
+async def process_manual_views(message: types.Message, state: FSMContext):
+    if not is_allowed(message.from_user.id):
+        return
+
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
+        return
+        
+    views = int(text)
+    data = await state.get_data()
+    clean_url = data.get("pending_url")
+    matched_platform = data.get("matched_platform")
+    telegram_id = message.from_user.id
+    
+    current_month = datetime.now().strftime("%Y-%m")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (telegram_id, clean_url, views, current_month, now))
+        conn.commit()
+        
+        cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
+        stats = cursor.fetchone()
+        v_count, total_views = stats[0] or 1, stats[1] or views
+        
+        current_rank = calculate_rank(total_views, v_count)
+        next_rank_msg = get_next_rank_progress(total_views, v_count)
+        
+        await message.answer(
+            f"✅ **تم تسجيل المقطع والمشاهدات بنجاح!**\n"
+            f"📹 المنصة: {matched_platform}\n"
+            f"👁 المشاهدات المسجلة: {views:,}\n"
+            f"📊 إجمالي مقاطعك هذا الشهر: {v_count} | إجمالي المشاهدات: {total_views:,}\n\n"
+            f"🎖 رتبتك الحالية: {current_rank}\n"
+            f"{next_rank_msg}",
+            reply_markup=main_keyboard,
+            parse_mode="Markdown"
+        )
+        await state.clear()
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        await message.answer("❌ هذا الرابط مسجل مسبقاً في النظام!", reply_markup=main_keyboard)
+        await state.clear()
+    finally:
+        conn.close()
+
+async def main():
+    asyncio.create_task(report_scheduler())
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
