@@ -105,6 +105,7 @@ class Form(StatesGroup):
     waiting_for_video_url = State()
     waiting_for_manual_views = State()
     waiting_for_new_views = State()
+    waiting_for_broadcast = State()
 
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
@@ -212,6 +213,77 @@ async def report_scheduler():
                         except Exception as e:
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
+
+# --- لوحة تحكم المشرفين التفاعلية (أمر /admin أو /panel) ---
+@dp.message(Command("admin", "panel"))
+async def admin_panel_handler(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    
+    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 التقرير الشامل (/stats)", callback_data="adm_stats"),
+            InlineKeyboardButton(text="🔔 طلبات المنصات", callback_data="adm_platforms")
+        ],
+        [
+            InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="adm_broadcast")
+        ]
+    ])
+    
+    await message.answer(
+        "⚡ **أهلاً بك يا مشرف النظام في لوحة التحكم الإدارية:**\nاختر أحد الخيارات أدناه أو استخدم الأوامر المباشرة:",
+        reply_markup=admin_keyboard,
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.startswith("adm_"))
+async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("ليس لديك صلاحية.", show_alert=True)
+        return
+        
+    action = callback.data.split("_")[1]
+    
+    if action == "stats":
+        await callback.answer()
+        # محاكاة أمر /stats مباشرة
+        await show_all_creators_detailed_stats_callback(callback.message)
+    elif action == "platforms":
+        await callback.answer()
+        await show_pending_platforms_callback(callback.message)
+    elif action == "broadcast":
+        await callback.answer()
+        await callback.message.answer("📢 أرسل الآن النص الذي تريد بثه لجميع صناع المحتوى:", reply_markup=cancel_keyboard)
+        await state.set_state(Form.waiting_for_broadcast)
+
+@dp.message(Form.waiting_for_broadcast)
+async def process_admin_broadcast_input(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    broadcast_text = message.text.strip()
+    await state.clear()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id FROM users")
+    users = cursor.fetchall()
+    conn.close()
+    
+    if not users:
+        await message.answer("⚠️ لا توجد أي حسابات مسجلة في البوت حالياً.")
+        return
+        
+    sent_count, failed_count = 0, 0
+    status_msg = await message.answer(f"⏳ جاري إرسال الرسالة إلى {len(users)} صانع محتوى...")
+    for user in users:
+        try:
+            await bot.send_message(user[0], f"📢 **إشعار من الإدارة:**\n\n{broadcast_text}", parse_mode="Markdown")
+            sent_count += 1
+            await asyncio.sleep(0.1)
+        except Exception:
+            failed_count += 1
+    await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال: `{failed_count}`", parse_mode="Markdown")
 
 @dp.message(Command("send"))
 async def send_direct_message(message: types.Message, state: FSMContext):
@@ -445,12 +517,7 @@ async def unallow_user(message: types.Message, state: FSMContext):
     conn.close()
     await message.answer(f"🗑 تم إزالة الحساب {target_id}.")
 
-@dp.message(Command("pending_platforms"))
-async def show_pending_platforms(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
+async def show_pending_platforms_callback(message: types.Message):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -476,73 +543,70 @@ async def show_pending_platforms(message: types.Message, state: FSMContext):
         text = f"🔔 **طلب منصة معلق:**\n🎮 Game ID: `{game_id}`\n🆔 Telegram ID: `{telegram_id}`\n📱 المنصة: **{platform}**\n⏱ وقت الطلب: {requested_at}"
         await message.answer(text, reply_markup=inline_kb, parse_mode="Markdown")
 
-@dp.message(Command("user"))
-async def search_user_stats(message: types.Message, state: FSMContext):
+@dp.message(Command("pending_platforms"))
+async def show_pending_platforms(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
         return
     await state.clear()
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام: /user [Game_ID أو Telegram_ID]")
-        return
-    target_input = args[1].strip()
+    await show_pending_platforms_callback(message)
+
+# --- الأمر الشامل الجديد لعرض كافة اللاعبين ومقاطعهم ومشاهداتهم (بديل /user) ---
+async def show_all_creators_detailed_stats_callback(message: types.Message):
     current_month = datetime.now().strftime("%Y-%m")
     conn = get_db_connection()
     cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id, game_id FROM users ORDER BY registered_at ASC")
+    users = cursor.fetchall()
     
-    # 1. البحث المرن في جدول المستخدمين للحصول على Telegram ID الأساسي
-    cursor.execute("""
-        SELECT telegram_id, game_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
-    user_info = cursor.fetchone()
-    
-    telegram_id = None
-    game_id_val = "غير مسجل"
-    
-    if user_info:
-        telegram_id = user_info[0]
-        game_id_val = user_info[1] or "غير مسجل"
-    else:
-        # 2. إذا لم يوجد في جدول users، نبحث مباشرة في جدول submissions بناءً على المدخل (قد يكون Telegram ID مباشر)
-        if target_input.isdigit():
-            telegram_id = int(target_input)
-            
-    if not telegram_id:
+    if not users:
         conn.close()
-        await message.answer(f"❌ لم يتم العثور على أي بيانات مسجلة بمعرّف: `{target_input}`", parse_mode="Markdown")
+        await message.answer("⚠️ لا توجد أي حسابات مسجلة في النظام حالياً.")
         return
+        
+    report = f"📊 **التفصيل الشامل لإنجازات صناع المحتوى (شهر {current_month}):**\n\n"
     
-    # جلب المقاطع بناءً على Telegram ID أو المعرّف القديم المحتمل لضمان عدم ضياع أي مقطع
-    cursor.execute("""
-        SELECT video_url, views, created_at FROM submissions 
-        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
-        AND submission_month = %s 
-        ORDER BY id ASC
-    """, (telegram_id, target_input, current_month))
-    submissions = cursor.fetchall()
-    
-    cursor.execute("""
-        SELECT COUNT(*), SUM(views) FROM submissions 
-        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
-        AND submission_month = %s
-    """, (telegram_id, target_input, current_month))
-    stats = cursor.fetchone()
+    for idx, u in enumerate(users, 1):
+        t_id, g_id = u[0], u[1] or "غير مسجل"
+        
+        cursor.execute("""
+            SELECT video_url, views FROM submissions 
+            WHERE telegram_id = %s AND submission_month = %s 
+            ORDER BY id ASC
+        """, (t_id, current_month))
+        subs = cursor.fetchall()
+        
+        v_count = len(subs)
+        total_views = sum(s[1] for s in subs)
+        rank = calculate_rank(total_views, v_count)
+        
+        report += f"━━━━━━━━━━━━━━━━━━━━\n"
+        report += f"{idx}. 🎮 **Game ID:** `{g_id}`\n"
+        report += f"🆔 **Telegram ID:** `{t_id}`\n"
+        report += f"👁 **إجمالي المشاهدات:** {total_views:,} | 📹 **المقاطع:** {v_count}\n"
+        report += f"🎖 **الرتبة:** {rank}\n"
+        
+        if subs:
+            report += "🎬 **المقاطع المسجلة:**\n"
+            for s_idx, sub in enumerate(subs, 1):
+                report += f"   {s_idx}. {sub[0]} (👁 {sub[1]:,})\n"
+        else:
+            report += "   ⚠️ لا توجد مقاطع لهذا الشهر.\n"
+            
     conn.close()
     
-    v_count, total_views = (stats[0] if stats and stats[0] else 0), (stats[1] if stats and stats[1] else 0)
-    rank = calculate_rank(total_views, v_count)
-    
-    report = f"👤 **تقرير صانع المحتوى:**\n🎮 **Game ID:** `{game_id_val}`\n🆔 **Telegram ID:** `{telegram_id}`\n👁 **إجمالي المشاهدات:** {total_views:,}\n📹 **عدد الفيديوهات:** {v_count}\n🎖 **الرتبة:** {rank}\n\n"
-    if submissions:
-        report += "🎬 **سجل المقاطع:**\n"
-        for idx, sub in enumerate(submissions, 1):
-            report += f"{idx}. {sub[0]} - المشاهدات: {sub[1]:,}\n"
+    if len(report) > 4000:
+        for chunk in [report[i:i+4000] for i in range(0, len(report), 4000)]:
+            await message.answer(chunk, disable_web_page_preview=True, parse_mode="Markdown")
     else:
-        report += "⚠️ لا توجد مقاطع مرفوعة هذا الشهر لهذا المستخدم."
-        
-    await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
+        await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
+
+@dp.message(Command("stats"))
+async def show_all_creators_detailed_stats(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await show_all_creators_detailed_stats_callback(message)
 
 @dp.message(Command("last_month_user"))
 async def search_last_month_user_stats(message: types.Message, state: FSMContext):
