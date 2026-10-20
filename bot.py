@@ -19,7 +19,7 @@ ADMIN_GROUP_ID = -1003968149974
 
 ADMIN_IDS = [ADMIN_GROUP_ID, 556767982, 8890083481]
 
-# متغير للتحكم بقفل أو فتح استقبال المقاطع
+# متغير للتحكم بقفل أو فتح البوت بالكامل
 SUBMISSIONS_LOCKED = False
 
 logging.basicConfig(level=logging.INFO)
@@ -133,7 +133,6 @@ def calculate_rank(views, videos_count):
         return "📌 مرشح (لم يستوفِ الحد الأدنى من شروط الرتب)"
 
 def get_next_rank_progress(views, videos_count):
-    # ترتيب المستويات تصاعدياً من الأقل للأعلى مع شروطها (المشاهدات، المقاطع)
     ranks_tiers = [
         (50, 1, "🌱 مبتدئ"),
         (150, 5, "🛡️ مجند"),
@@ -216,7 +215,7 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
-# --- أوامر قفل وفتح استقبال المقاطع ---
+# --- أوامر قفل وفتح استقبال المقاطع والتعديلات ---
 @dp.message(Command("lock"))
 async def lock_submissions(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -224,7 +223,7 @@ async def lock_submissions(message: types.Message, state: FSMContext):
     global SUBMISSIONS_LOCKED
     SUBMISSIONS_LOCKED = True
     await state.clear()
-    await message.answer("🔒 **تم قفل نظام إرسال المقاطع بنجاح.**\nلن يتمكن صناع المحتوى من إرسال روابط جديدة حتى يتم فتح النظام.", parse_mode="Markdown")
+    await message.answer("🔒 **تم قفل البوت بنجاح.**\nلن يتمكن صناع المحتوى من إرسال مقاطع جديدة أو تعديل مشاهدات مقاطعهم حتى يتم الفتح.", parse_mode="Markdown")
 
 @dp.message(Command("unlock"))
 async def unlock_submissions(message: types.Message, state: FSMContext):
@@ -233,7 +232,7 @@ async def unlock_submissions(message: types.Message, state: FSMContext):
     global SUBMISSIONS_LOCKED
     SUBMISSIONS_LOCKED = False
     await state.clear()
-    await message.answer("🔓 **تم فتح نظام إرسال المقاطع بنجاح.**\nيمكن لصناع المحتوى الآن إرسال مقاطعهم كفترة سابقة.", parse_mode="Markdown")
+    await message.answer("🔓 **تم فتح البوت بنجاح.**\nيمكن لصناع المحتوى الآن إرسال وتعديل مشاهدات مقاطعهم كالمعتاد.", parse_mode="Markdown")
 
 @dp.message(Command("broadcast"))
 async def broadcast_message(message: types.Message, state: FSMContext):
@@ -687,10 +686,17 @@ async def process_update_game_id(message: types.Message, state: FSMContext):
     finally:
         conn.close()
 
+# --- تعديل المشاهدات: أصبح الآن يخضع لحالة القفل أيضاً ---
 @dp.message(F.text.contains("تعديل مشاهدات مقطع"))
 async def start_creator_update_views(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
+        
+    # فحص القفل لمنع التعديل وقت إغلاق البوت
+    if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
+        await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nلا يمكن تعديل مشاهدات المقاطع في الوقت الحالي.", parse_mode="Markdown")
+        return
+
     await state.clear()
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
@@ -716,6 +722,12 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
 async def process_creator_new_views(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
+    
+    if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة أثناء العملية.**", parse_mode="Markdown", reply_markup=main_keyboard)
+        return
+
     text = message.text.strip()
     data = await state.get_data()
     user_videos = data.get("user_videos", [])
@@ -787,9 +799,8 @@ async def start_submission(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
     
-    # فحص ما إذا كان البوت مقفلاً من قِبل المشرفين
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
-        await message.answer("🔒 **عذراً، نظام استقبال المقاطع مقفل حالياً من قِبل الإدارة.**\nيرجى الانتظار حتى يتم فتح البوت مجدداً.", parse_mode="Markdown")
+        await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nيرجى الانتظار حتى يتم فتح البوت مجدداً.", parse_mode="Markdown")
         return
 
     await state.clear()
@@ -810,6 +821,12 @@ async def start_submission(message: types.Message, state: FSMContext):
 async def process_video_url(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
+    
+    if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة.**", parse_mode="Markdown", reply_markup=main_keyboard)
+        return
+
     text = message.text.strip()
     
     matched_platform, clean_url = None, None
@@ -840,6 +857,12 @@ async def process_video_url(message: types.Message, state: FSMContext):
 async def process_manual_views(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
+        
+    if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة.**", parse_mode="Markdown", reply_markup=main_keyboard)
+        return
+
     text = message.text.strip()
     if not text.isdigit():
         await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
