@@ -740,7 +740,7 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
         
-    await state.clear()  # تصفير الحالة السابقة دائماً لتجنب تعليق المستخدم
+    await state.clear()
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nلا يمكن تعديل مشاهدات المقاطع في الوقت الحالي.", parse_mode="Markdown")
@@ -748,23 +748,28 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
 
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT video_url FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
-    rows = cursor.fetchall()
-    conn.close()
     
-    if not rows:
-        await message.answer("⚠️ ليس لديك أي مقاطع مسجلة هذا الشهر لتعديل مشاهداتها.", reply_markup=main_keyboard)
-        return
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT video_url FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
+        rows = cursor.fetchall()
+        conn.close()
         
-    text = "🎬 **اختر المقطع الذي تريد تحديث مشاهداته بإرسال رقمه:**\n\n"
-    for idx, row in enumerate(rows, 1):
-        text += f"{idx}. {row[0]}\n"
-    
-    await state.update_data(user_videos=[r[0] for r in rows])
-    await message.answer(text, reply_markup=cancel_keyboard, parse_mode="Markdown")
-    await state.set_state(Form.waiting_for_new_views)
+        if not rows:
+            await message.answer("⚠️ ليس لديك أي مقاطع مسجلة لهذا الشهر لتعديل مشاهداتها.", reply_markup=main_keyboard)
+            return
+            
+        text = "🎬 **اختر المقطع الذي تريد تحديث مشاهداته بإرسال رقمه:**\n\n"
+        for idx, row in enumerate(rows, 1):
+            text += f"{idx}. {row[0]}\n"
+        
+        await state.update_data(user_videos=[r[0] for r in rows])
+        await message.answer(text, reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await state.set_state(Form.waiting_for_new_views)
+    except Exception as e:
+        logging.error(f"Error in creator update views: {e}")
+        await message.answer("❌ حدث خطأ أثناء جلب مقاطعك، يرجى المحاولة مرة أخرى أو التواصل مع المشرف.", reply_markup=main_keyboard)
 
 @dp.message(Form.waiting_for_new_views)
 async def process_creator_new_views(message: types.Message, state: FSMContext):
@@ -773,7 +778,7 @@ async def process_creator_new_views(message: types.Message, state: FSMContext):
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await state.clear()
-        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة أثناء العملية.**", parse_mode="Markdown", reply_markup=main_keyboard)
+        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة.**", parse_mode="Markdown", reply_markup=main_keyboard)
         return
 
     text = message.text.strip()
@@ -847,7 +852,7 @@ async def start_submission(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
     
-    await state.clear()  # تصفير الحالة السابقة دائماً لتجنب تعليق المستخدم
+    await state.clear()
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nيرجى الانتظار حتى يتم فتح البوت مجدداً.", parse_mode="Markdown")
