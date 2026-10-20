@@ -213,6 +213,38 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
+@dp.message(Command("fix_user"))
+async def admin_fix_user(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
+        return
+    await state.clear()
+    args = message.text.split()
+    if len(args) < 3 or not args[1].isdigit() or not args[2].isdigit():
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/fix_user [Telegram_ID] [Game_ID]`", parse_mode="Markdown")
+        return
+    
+    target_telegram_id = int(args[1].strip())
+    target_game_id = args[2].strip()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO users (telegram_id, game_id, registered_at) 
+            VALUES (%s, %s, %s)
+            ON CONFLICT (telegram_id) 
+            DO UPDATE SET game_id = EXCLUDED.game_id
+        """, (target_telegram_id, target_game_id, now))
+        conn.commit()
+        await message.answer(f"✅ تم ربط المستخدم بنجاح!\n🆔 Telegram ID: `{target_telegram_id}`\n🎮 Game ID: `{target_game_id}`", parse_mode="Markdown")
+    except Exception as e:
+        conn.rollback()
+        await message.answer(f"❌ حدث خطأ أثناء الربط:\n`{str(e)}`", parse_mode="Markdown")
+    finally:
+        conn.close()
+
 @dp.message(Command("send"))
 async def send_direct_message(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -493,7 +525,6 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # البحث الذكي والشامل في جدول المستخدمين أو جدول المقاطع
     cursor.execute("""
         SELECT telegram_id, game_id FROM users 
         WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
