@@ -221,7 +221,6 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
-# --- لوحة التحكم الإدارية الشاملة والمحدثة ---
 @dp.message(Command("admin", "panel"))
 async def admin_panel_handler(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -362,6 +361,34 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         await callback.answer()
         await callback.message.answer("📜 أرسل **Game ID** أو **Telegram ID** للاستعلام عن تقرير الشهر الماضي:", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_last_month_input)
+
+# --- معالجة الإلغاء الشاملة والآمنة لجميع الحالات ---
+@dp.message(F.text.in_({"إلغاء", "كنسل"}))
+@dp.message(Command("cancel", "cancle", "reset", "fix"))
+async def global_cancel_handler(message: types.Message, state: FSMContext):
+    telegram_id = message.from_user.id
+    if not is_allowed(telegram_id) and not is_admin(telegram_id):
+        return
+    await state.clear()
+    await message.answer("🔄 تم إلغاء العملية بنجاح والعودة للقائمة الرئيسية.", reply_markup=main_keyboard)
+
+@dp.message(Command("start"))
+async def start_command_handler(message: types.Message, state: FSMContext):
+    telegram_id = message.from_user.id
+    if not is_allowed(telegram_id):
+        await message.answer("⛔ عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.")
+        return
+    await state.clear()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
+    user = cursor.fetchone()
+    conn.close()
+    if user:
+        await message.answer(f"أهلاً بك مجدداً! معرّف اللعبة المسجل بحسابك: {user[0]}", reply_markup=main_keyboard)
+    else:
+        await message.answer("أهلاً بك! يرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
+        await state.set_state(Form.waiting_for_game_id)
 
 # --- معالجة الحالات للإدارة ---
 @dp.message(Form.waiting_for_stats_game_id)
@@ -840,28 +867,6 @@ async def admin_summary_handler(message: types.Message, state: FSMContext):
 async def get_group_id(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"معرّف المحادثة (Chat ID): {message.chat.id}\nمعرّف حسابك (Telegram ID): {message.from_user.id}")
-
-@dp.message(F.text.in_({"إلغاء", "كنسل"}))
-@dp.message(Command("cancel", "reset", "fix", "start"))
-async def global_commands_handler(message: types.Message, state: FSMContext):
-    telegram_id = message.from_user.id
-    if not is_allowed(telegram_id):
-        await message.answer("⛔ عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.")
-        return
-    await state.clear()
-    if message.text and message.text.startswith("/start"):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
-        user = cursor.fetchone()
-        conn.close()
-        if user:
-            await message.answer(f"أهلاً بك مجدداً! معرّف اللعبة المسجل بحسابك: {user[0]}", reply_markup=main_keyboard)
-        else:
-            await message.answer("أهلاً بك! يرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
-            await state.set_state(Form.waiting_for_game_id)
-    else:
-        await message.answer("🔄 تم إلغاء العملية بنجاح.", reply_markup=main_keyboard)
 
 @dp.message(F.text.contains("طلب إضافة منصة"))
 async def request_platform_start(message: types.Message, state: FSMContext):
