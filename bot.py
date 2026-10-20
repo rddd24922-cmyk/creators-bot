@@ -740,7 +740,7 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
         
-    await state.clear()
+    await state.clear()  # تصفير الحالة السابقة دائماً لتجنب تعليق المستخدم
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nلا يمكن تعديل مشاهدات المقاطع في الوقت الحالي.", parse_mode="Markdown")
@@ -748,28 +748,23 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
 
     telegram_id = message.from_user.id
     current_month = datetime.now().strftime("%Y-%m")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT video_url FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
+    rows = cursor.fetchall()
+    conn.close()
     
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT video_url FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
-        rows = cursor.fetchall()
-        conn.close()
+    if not rows:
+        await message.answer("⚠️ ليس لديك أي مقاطع مسجلة هذا الشهر لتعديل مشاهداتها.", reply_markup=main_keyboard)
+        return
         
-        if not rows:
-            await message.answer("⚠️ ليس لديك أي مقاطع مسجلة لهذا الشهر لتعديل مشاهداتها.", reply_markup=main_keyboard)
-            return
-            
-        text = "🎬 **اختر المقطع الذي تريد تحديث مشاهداته بإرسال رقمه:**\n\n"
-        for idx, row in enumerate(rows, 1):
-            text += f"{idx}. {row[0]}\n"
-        
-        await state.update_data(user_videos=[r[0] for r in rows])
-        await message.answer(text, reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_new_views)
-    except Exception as e:
-        logging.error(f"Error in creator update views: {e}")
-        await message.answer("❌ حدث خطأ أثناء جلب مقاطعك، يرجى المحاولة مرة أخرى أو التواصل مع المشرف.", reply_markup=main_keyboard)
+    text = "🎬 **اختر المقطع الذي تريد تحديث مشاهداته بإرسال رقمه:**\n\n"
+    for idx, row in enumerate(rows, 1):
+        text += f"{idx}. {row[0]}\n"
+    
+    await state.update_data(user_videos=[r[0] for r in rows])
+    await message.answer(text, reply_markup=cancel_keyboard, parse_mode="Markdown")
+    await state.set_state(Form.waiting_for_new_views)
 
 @dp.message(Form.waiting_for_new_views)
 async def process_creator_new_views(message: types.Message, state: FSMContext):
@@ -778,7 +773,7 @@ async def process_creator_new_views(message: types.Message, state: FSMContext):
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await state.clear()
-        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة.**", parse_mode="Markdown", reply_markup=main_keyboard)
+        await message.answer("🔒 **عذراً، تم قفل البوت من قِبل الإدارة أثناء العملية.**", parse_mode="Markdown", reply_markup=main_keyboard)
         return
 
     text = message.text.strip()
@@ -852,7 +847,7 @@ async def start_submission(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
     
-    await state.clear()
+    await state.clear()  # تصفير الحالة السابقة دائماً لتجنب تعليق المستخدم
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
         await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nيرجى الانتظار حتى يتم فتح البوت مجدداً.", parse_mode="Markdown")
@@ -941,3 +936,30 @@ async def process_manual_views(message: types.Message, state: FSMContext):
         stats = cursor.fetchone()
         v_count, total_views = stats[0] or 1, stats[1] or views
         
+        current_rank = calculate_rank(total_views, v_count)
+        next_rank_msg = get_next_rank_progress(total_views, v_count)
+        
+        await message.answer(
+            f"✅ **تم تسجيل المقطع والمشاهدات بنجاح!**\n"
+            f"📹 المنصة: {matched_platform}\n"
+            f"👁 المشاهدات المسجلة: {views:,}\n"
+            f"📊 إجمالي مقاطعك هذا الشهر: {v_count} | إجمالي المشاهدات: {total_views:,}\n\n"
+            f"🎖 رتبتك الحالية: {current_rank}\n"
+            f"{next_rank_msg}",
+            reply_markup=main_keyboard,
+            parse_mode="Markdown"
+        )
+        await state.clear()
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        await message.answer("❌ هذا الرابط مسجل مسبقاً في النظام!", reply_markup=main_keyboard)
+        await state.clear()
+    finally:
+        conn.close()
+
+async def main():
+    asyncio.create_task(report_scheduler())
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
