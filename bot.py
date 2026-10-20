@@ -222,6 +222,30 @@ async def broadcast_message(message: types.Message, state: FSMContext):
             failed_count += 1
     await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال: `{failed_count}`", parse_mode="Markdown")
 
+# --- أمر إداري جديد لإزالة منصة صانع محتوى ---
+@dp.message(Command("remove_platform"))
+async def admin_remove_platform(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    args = message.text.split()
+    if len(args) < 3 or not args[1].isdigit():
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/remove_platform [Telegram_ID] [اسم_المنصة]`\n\n*المنصات المدعومة: TikTok, Instagram, YouTube, Facebook*", parse_mode="Markdown")
+        return
+    
+    target_id = int(args[1].strip())
+    platform = args[2].strip()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform = %s", (target_id, platform))
+    if cursor.rowcount > 0:
+        conn.commit()
+        await message.answer(f"✅ تم إزالة منصة **{platform}** من الحساب `{target_id}` بنجاح.", parse_mode="Markdown")
+    else:
+        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا الحساب.", parse_mode="Markdown")
+    conn.close()
+
 @dp.message(Command("set_views"))
 async def admin_set_views(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
