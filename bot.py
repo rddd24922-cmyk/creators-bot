@@ -268,6 +268,25 @@ async def admin_fix_submissions(message: types.Message, state: FSMContext):
     
     await message.answer(f"✅ تم نقل وتحديث **{updated_count}** مقطع بنجاح من المعرّف `{old_id}` إلى المعرّف الجديد `{new_id}`!", parse_mode="Markdown")
 
+@dp.message(Command("delete_game_id"))
+async def admin_delete_game_id(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
+        return
+    await state.clear()
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/delete_game_id [Game_ID]`", parse_mode="Markdown")
+        return
+    target_game_id = args[1].strip()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE game_id = %s", (target_game_id,))
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    await message.answer(f"✅ تم حذف عدد ({count}) سجل معلق مرتبط بمعرّف اللعبة `{target_game_id}` بنجاح.", parse_mode="Markdown")
+
 @dp.message(Command("send"))
 async def send_direct_message(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
