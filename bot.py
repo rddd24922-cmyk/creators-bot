@@ -351,7 +351,7 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         await state.set_state(Form.waiting_for_allow_id)
     elif action == "delplat":
         await callback.answer()
-        await callback.message.answer("➖ أرسل البيانات بالشكل التالي:\n`[Game_ID] [اسم_المنصة]`\n*(مثال: 0000 TikTok)*", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await callback.message.answer("➖ أرسل معرّف اللاعب واسم المنصة (مثال: `0000 TikTok`):", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_remove_platform_input)
     elif action == "summary":
         await callback.answer()
@@ -390,7 +390,6 @@ async def start_command_handler(message: types.Message, state: FSMContext):
         await message.answer("أهلاً بك! يرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
         await state.set_state(Form.waiting_for_game_id)
 
-# --- معالجة المدخلات الإدارية مع تنظيف الحالة تلقائياً ---
 @dp.message(Form.waiting_for_stats_game_id)
 async def receive_stats_game_id(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -469,7 +468,7 @@ async def receive_set_views_input(message: types.Message, state: FSMContext):
         return
     await state.clear()
     args = message.text.split()
-    if len(args) < 2 or not args[-1].isdigit():
+    if len(args) < 3 or not args[-1].isdigit():
         await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`[رابط_المقطع] [عدد_المشاهدات_الجديد]`", parse_mode="Markdown")
         return
     new_views = int(args[-1].strip())
@@ -513,13 +512,22 @@ async def receive_remove_platform_input(message: types.Message, state: FSMContex
     if not is_admin(message.from_user.id):
         return
     await state.clear()
-    args = message.text.split()
+    args = message.text.strip().split()
     if len(args) < 2:
         await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`[Game_ID] [اسم_المنصة]`\n*(مثال: 0000 TikTok)*", parse_mode="Markdown")
         return
     
-    target_input = args[0].strip()
-    platform = args[1].strip()
+    target_input = None
+    platform = None
+    for arg in args:
+        if arg.isdigit():
+            target_input = arg
+        else:
+            platform = arg
+            
+    if not target_input or not platform:
+        await message.answer("❌ يرجى التأكد من كتابة المعرّف واسم المنصة بشكل صحيح.", parse_mode="Markdown")
+        return
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -536,12 +544,19 @@ async def receive_remove_platform_input(message: types.Message, state: FSMContex
         return
         
     telegram_id = user_row[0]
-    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform = %s", (telegram_id, platform))
+    
+    # حذف المنصة بمطابقة غير حساسة لحالة الحروف (ILIKE) لضمان إزالتها بغض النظر عن الحروف الكبيرة والصغيرة
+    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform ILIKE %s", (telegram_id, platform))
     if cursor.rowcount > 0:
         conn.commit()
         await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح.", parse_mode="Markdown")
     else:
-        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.", parse_mode="Markdown")
+        conn.close()
+        # جلب المنصات المسجلة فعلياً لهذا اللاعب لمساعدة المشرف
+        actual_plats = get_user_platforms(telegram_id)
+        plats_list = ", ".join(actual_plats.keys()) if actual_plats else "لا توجد منصات مسجلة"
+        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.\nالمنصات المسجلة فعلياً لديه هي: ({plats_list})", parse_mode="Markdown")
+        return
     conn.close()
 
 @dp.message(Form.waiting_for_last_month_input)
@@ -788,12 +803,16 @@ async def admin_remove_platform(message: types.Message, state: FSMContext):
         return
         
     telegram_id = user_row[0]
-    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform = %s", (telegram_id, platform))
+    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform ILIKE %s", (telegram_id, platform))
     if cursor.rowcount > 0:
         conn.commit()
         await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح.", parse_mode="Markdown")
     else:
-        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.", parse_mode="Markdown")
+        conn.close()
+        actual_plats = get_user_platforms(telegram_id)
+        plats_list = ", ".join(actual_plats.keys()) if actual_plats else "لا توجد منصات مسجلة"
+        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.\nالمنصات المسجلة فعلياً لديه هي: ({plats_list})", parse_mode="Markdown")
+        return
     conn.close()
 
 @dp.message(Command("set_views"))
