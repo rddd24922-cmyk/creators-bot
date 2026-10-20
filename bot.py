@@ -244,6 +244,28 @@ async def send_direct_message(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ فشل إرسال الرسالة:\n`{str(e)}`", parse_mode="Markdown")
 
+@dp.message(Command("remove_video"))
+async def admin_remove_video(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
+        return
+    await state.clear()
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/remove_video [رابط_المقطع]`", parse_mode="Markdown")
+        return
+    
+    video_url = args[1].strip()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM submissions WHERE video_url = %s", (video_url,))
+    if cursor.rowcount > 0:
+        conn.commit()
+        await message.answer(f"✅ تم حذف المقطع بنجاح من النظام:\n`{video_url}`", parse_mode="Markdown")
+    else:
+        await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
+    conn.close()
+
 @dp.message(Command("broadcast"))
 async def broadcast_message(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
