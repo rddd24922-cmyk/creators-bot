@@ -560,7 +560,7 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     await state.clear()
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام: /user [Game_ID]")
+        await message.answer("⚠️ طريقة الاستخدام: /user [Game_ID أو Telegram_ID]")
         return
     target_input = args[1].strip()
     current_month = datetime.now().strftime("%Y-%m")
@@ -570,16 +570,13 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     cursor.execute("""
         SELECT telegram_id, game_id FROM users 
         WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        UNION 
-        SELECT telegram_id, NULL as game_id FROM submissions 
-        WHERE telegram_id::text = TRIM(%s)
         LIMIT 1
-    """, (target_input, target_input, target_input))
+    """, (target_input, target_input))
     user_info = cursor.fetchone()
     
     if not user_info:
         conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: {target_input}")
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
         return
         
     telegram_id = user_info[0]
@@ -593,9 +590,9 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     
     v_count, total_views = stats[0] or 0, stats[1] or 0
     rank = calculate_rank(total_views, v_count)
-    report = f"👤 تقرير إنجازات صانع المحتوى (Game ID: `{game_id_val}`) - الشهر الحالي ({current_month}):\n🆔 Telegram ID: `{telegram_id}`\nإجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nالرتبة: {rank}\n\n"
+    report = f"👤 **تقرير صانع المحتوى:**\n🎮 **Game ID:** `{game_id_val}`\n🆔 **Telegram ID:** `{telegram_id}`\n👁 **إجمالي المشاهدات:** {total_views:,}\n📹 **عدد الفيديوهات:** {v_count}\n🎖 **الرتبة:** {rank}\n\n"
     if submissions:
-        report += "سجل المقاطع:\n"
+        report += "🎬 **سجل المقاطع:**\n"
         for idx, sub in enumerate(submissions, 1):
             report += f"{idx}. {sub[0]} - المشاهدات: {sub[1]:,}\n"
     else:
@@ -623,11 +620,8 @@ async def search_last_month_user_stats(message: types.Message, state: FSMContext
     cursor.execute("""
         SELECT telegram_id, game_id FROM users 
         WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        UNION 
-        SELECT telegram_id, NULL as game_id FROM submissions 
-        WHERE telegram_id::text = TRIM(%s)
         LIMIT 1
-    """, (target_input, target_input, target_input))
+    """, (target_input, target_input))
     user_info = cursor.fetchone()
     
     if not user_info:
