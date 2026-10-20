@@ -92,7 +92,6 @@ def get_user_platforms(telegram_id: int):
 def clean_old_submissions():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # تم تعديل فترة الحذف التلقائي لتصبح 90 يوماً
     expiry_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("DELETE FROM submissions WHERE created_at < %s", (expiry_date,))
     conn.commit()
@@ -222,28 +221,38 @@ async def broadcast_message(message: types.Message, state: FSMContext):
             failed_count += 1
     await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال: `{failed_count}`", parse_mode="Markdown")
 
-# --- أمر إداري جديد لإزالة منصة صانع محتوى ---
+# --- أمر إداري معدل لإزالة المنصة باستخدام Game ID ---
 @dp.message(Command("remove_platform"))
 async def admin_remove_platform(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     await state.clear()
     args = message.text.split()
-    if len(args) < 3 or not args[1].isdigit():
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/remove_platform [Telegram_ID] [اسم_المنصة]`\n\n*المنصات المدعومة: TikTok, Instagram, YouTube, Facebook*", parse_mode="Markdown")
+    if len(args) < 3:
+        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/remove_platform [Game_ID] [اسم_المنصة]`\n\n*المنصات المدعومة: TikTok, Instagram, YouTube, Facebook*", parse_mode="Markdown")
         return
     
-    target_id = int(args[1].strip())
+    target_game_id = args[1].strip()
     platform = args[2].strip()
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform = %s", (target_id, platform))
+    # البحث عن telegram_id المرتبط بمعرّف اللعبة
+    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
+    user_row = cursor.fetchone()
+    
+    if not user_row:
+        conn.close()
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: `{target_game_id}`", parse_mode="Markdown")
+        return
+        
+    telegram_id = user_row[0]
+    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform = %s", (telegram_id, platform))
     if cursor.rowcount > 0:
         conn.commit()
-        await message.answer(f"✅ تم إزالة منصة **{platform}** من الحساب `{target_id}` بنجاح.", parse_mode="Markdown")
+        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى (Game ID: `{target_game_id}`) بنجاح.", parse_mode="Markdown")
     else:
-        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا الحساب.", parse_mode="Markdown")
+        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.", parse_mode="Markdown")
     conn.close()
 
 @dp.message(Command("set_views"))
