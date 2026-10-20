@@ -744,7 +744,7 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
     await state.clear()
     
     if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
-        await message.answer("🔒 **عذراً، البوت مقفل حالياً من قِبل الإدارة.**\nلا يمكن تعديل مشاهدات المقاطع في الوقت الحالي.", parse_mode="Markdown")
+        await message.answer("عذراً، البوت مقفل حالياً من قِبل الإدارة. لا يمكن تعديل مشاهدات المقاطع في الوقت الحالي.")
         return
 
     telegram_id = message.from_user.id
@@ -761,17 +761,17 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
             await message.answer("⚠️ ليس لديك أي مقاطع مسجلة لهذا الشهر لتعديل مشاهداتها.", reply_markup=main_keyboard)
             return
             
-        text = "🎬 **اختر المقطع الذي تريد تحديث مشاهداته بإرسال رقمه:**\n\n"
+        text = "اختر المقطع الذي تريد تحديث مشاهداته بإرسال رقمه:\n\n"
         for idx, row in enumerate(rows, 1):
             text += f"{idx}. {row[0]}\n"
         
         await state.update_data(user_videos=[r[0] for r in rows])
-        await message.answer(text, reply_markup=cancel_keyboard, parse_mode="Markdown")
+        # إرسال الرسالة بدون parse_mode لتجنب أخطاء روابط إنستغرام أو الرموز الخاصة
+        await message.answer(text, reply_markup=cancel_keyboard)
         await state.set_state(Form.waiting_for_new_views)
     except Exception as e:
-        # طباعة الخطأ التفصيلي بالكامل في سجلات Railway (Logs) لتشخيصه بدقة
         logging.error(f"Error in start_creator_update_views: {traceback.format_exc()}")
-        await message.answer(f"❌ حدث خطأ تقني:\n`{str(e)}`", parse_mode="Markdown", reply_markup=main_keyboard)
+        await message.answer(f"حدث خطأ تقني:\n{str(e)}", reply_markup=main_keyboard)
 
 @dp.message(Form.waiting_for_new_views)
 async def process_creator_new_views(message: types.Message, state: FSMContext):
@@ -921,7 +921,7 @@ async def process_manual_views(message: types.Message, state: FSMContext):
 
     text = message.text.strip()
     if not text.isdigit():
-        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
+        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_cancel_keyboard=True, reply_markup=cancel_keyboard)
         return
         
     views = int(text)
