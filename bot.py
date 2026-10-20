@@ -245,6 +245,29 @@ async def admin_fix_user(message: types.Message, state: FSMContext):
     finally:
         conn.close()
 
+@dp.message(Command("fix_submissions"))
+async def admin_fix_submissions(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
+        return
+    await state.clear()
+    args = message.text.split()
+    if len(args) < 3 or not args[1].isdigit() or not args[2].isdigit():
+        await message.answer("⚠️ طريقة الاستخدام:\n`/fix_submissions [الرقم_القديم] [الرقم_الصحيح]`", parse_mode="Markdown")
+        return
+    
+    old_id = int(args[1].strip())
+    new_id = int(args[2].strip())
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE submissions SET telegram_id = %s WHERE telegram_id = %s", (new_id, old_id))
+    updated_count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    
+    await message.answer(f"✅ تم نقل وتحديث **{updated_count}** مقطع بنجاح من المعرّف `{old_id}` إلى المعرّف الجديد `{new_id}`!", parse_mode="Markdown")
+
 @dp.message(Command("send"))
 async def send_direct_message(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
