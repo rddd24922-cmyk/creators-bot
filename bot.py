@@ -106,7 +106,13 @@ class Form(StatesGroup):
     waiting_for_manual_views = State()
     waiting_for_new_views = State()
     waiting_for_broadcast = State()
-    waiting_for_stats_game_id = State() # الحالة الجديدة لطلب تقرير لاعب معين
+    waiting_for_stats_game_id = State()
+    waiting_for_send_msg_input = State()
+    waiting_for_remove_video_url = State()
+    waiting_for_set_views_input = State()
+    waiting_for_allow_id = State()
+    waiting_for_remove_platform_input = State()
+    waiting_for_last_month_input = State()
 
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
@@ -215,6 +221,7 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
+# --- لوحة التحكم الإدارية الشاملة والمحدثة ---
 @dp.message(Command("admin", "panel"))
 async def admin_panel_handler(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -223,21 +230,35 @@ async def admin_panel_handler(message: types.Message, state: FSMContext):
     
     admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📊 التقرير الشامل لصانع محتوى", callback_data="adm_stats"),
-            InlineKeyboardButton(text="🔔 طلبات المنصات", callback_data="adm_platforms")
+            InlineKeyboardButton(text="📊 التقرير الشامل لصانع محتوى", callback_data="adm_stats")
         ],
         [
+            InlineKeyboardButton(text="🔔 طلبات المنصات", callback_data="adm_platforms"),
             InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="adm_broadcast")
+        ],
+        [
+            InlineKeyboardButton(text="✉️ إرسال رسالة خاصة", callback_data="adm_send")
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ تعديل مشاهدات", callback_data="adm_setviews"),
+            InlineKeyboardButton(text="🗑 حذف مقطع", callback_data="adm_delvideo")
+        ],
+        [
+            InlineKeyboardButton(text="➕ إضافة معتمد", callback_data="adm_allow"),
+            InlineKeyboardButton(text="➖ إزالة منصة", callback_data="adm_delplat")
+        ],
+        [
+            InlineKeyboardButton(text="📈 الإحصائيات والملخص", callback_data="adm_summary"),
+            InlineKeyboardButton(text="📜 تقرير الشهر الماضي", callback_data="adm_lastmonth")
         ]
     ])
     
     await message.answer(
-        "⚡ **أهلاً بك يا مشرف النظام في لوحة التحكم الإدارية:**\nاختر أحد الخيارات أدناه أو استخدم الأوامر المباشرة:",
+        "⚡ **أهلاً بك يا مشرف النظام في لوحة التحكم الإدارية:**\nاختر أحد الأوامر التالية للتحكم الكامل بالنظام:",
         reply_markup=admin_keyboard,
         parse_mode="Markdown"
     )
 
-# --- دالة جلب وعرض تقرير لاعب معين بناءً على معرف اللعبة ---
 async def process_specific_creator_stats(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
@@ -304,7 +325,7 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
     
     if action == "stats":
         await callback.answer()
-        await callback.message.answer("🔍 أرسل الآن **معرّف اللعبة (Game ID)** أو **معرّف التيليجرام** لصانع المحتوى الذي تريد استخراج تقريره:", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await callback.message.answer("🔍 أرسل الآن **معرّف اللعبة (Game ID)** لصانع المحتوى الذي تريد استخراج تقريره:", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_stats_game_id)
     elif action == "platforms":
         await callback.answer()
@@ -313,12 +334,83 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         await callback.answer()
         await callback.message.answer("📢 أرسل الآن النص الذي تريد بثه لجميع صناع المحتوى:", reply_markup=cancel_keyboard)
         await state.set_state(Form.waiting_for_broadcast)
+    elif action == "send":
+        await callback.answer()
+        await callback.message.answer("✉️ أرسل الرسالة بالشكل التالي:\n`[Game_ID] [نص الرسالة]`", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await state.set_state(Form.waiting_for_send_msg_input)
+    elif action == "delvideo":
+        await callback.answer()
+        await callback.message.answer("🗑 أرسل **رابط المقطع** الذي تريد حذفه:", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await state.set_state(Form.waiting_for_remove_video_url)
+    elif action == "setviews":
+        await callback.answer()
+        await callback.message.answer("⚙️ أرسل البيانات بالشكل التالي:\n`[رابط_المقطع] [عدد_المشاهدات_الجديد]`", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await state.set_state(Form.waiting_for_set_views_input)
+    elif action == "allow":
+        await callback.answer()
+        await callback.message.answer("➕ أرسل **Telegram ID** للحساب المراد اعتماده في النظام:", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await state.set_state(Form.waiting_for_allow_id)
+    elif action == "delplat":
+        await callback.answer()
+        await callback.message.answer("➖ أرسل البيانات بالشكل التالي:\n`[Game_ID] [اسم_المنصة]`\n*(مثال: 0000 TikTok)*", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await state.set_state(Form.waiting_for_remove_platform_input)
+    elif action == "summary":
+        await callback.answer()
+        message_obj = callback.message
+        await admin_summary_handler(message_obj, state)
+    elif action == "lastmonth":
+        await callback.answer()
+        await callback.message.answer("📜 أرسل **Game ID** أو **Telegram ID** للاستعلام عن تقرير الشهر الماضي:", reply_markup=cancel_keyboard, parse_mode="Markdown")
+        await state.set_state(Form.waiting_for_last_month_input)
 
+# --- معالجة الحالات للإدارة ---
 @dp.message(Form.waiting_for_stats_game_id)
 async def receive_stats_game_id(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     await process_specific_creator_stats(message, state)
+
+@dp.message(Form.waiting_for_send_msg_input)
+async def receive_send_msg_input(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    message.text = f"/send {message.text.strip()}"
+    await send_direct_message(message, state)
+
+@dp.message(Form.waiting_for_remove_video_url)
+async def receive_remove_video_url(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    message.text = f"/remove_video {message.text.strip()}"
+    await admin_remove_video(message, state)
+
+@dp.message(Form.waiting_for_set_views_input)
+async def receive_set_views_input(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    message.text = f"/set_views {message.text.strip()}"
+    await admin_set_views(message, state)
+
+@dp.message(Form.waiting_for_allow_id)
+async def receive_allow_id(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    message.text = f"/allow {message.text.strip()}"
+    await allow_user(message, state)
+
+@dp.message(Form.waiting_for_remove_platform_input)
+async def receive_remove_platform_input(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    message.text = f"/remove_platform {message.text.strip()}"
+    await admin_remove_platform(message, state)
+
+@dp.message(Form.waiting_for_last_month_input)
+async def receive_last_month_input(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    message.text = f"/last_month_user {message.text.strip()}"
+    await search_last_month_user_stats(message, state)
 
 @dp.message(Command("stats"))
 async def show_all_creators_detailed_stats(message: types.Message, state: FSMContext):
