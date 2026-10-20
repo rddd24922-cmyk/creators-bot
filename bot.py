@@ -224,17 +224,24 @@ async def send_direct_message(message: types.Message, state: FSMContext):
         await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/send [Game_ID] [نص الرسالة]`", parse_mode="Markdown")
         return
     
-    target_game_id = args[1].strip()
+    target_input = args[1].strip()
     msg_text = args[2].strip()
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s OR telegram_id::text = %s", (target_game_id, target_game_id))
+    cursor.execute("""
+        SELECT telegram_id FROM users 
+        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
+        UNION 
+        SELECT telegram_id FROM submissions 
+        WHERE telegram_id::text = TRIM(%s)
+        LIMIT 1
+    """, (target_input, target_input, target_input))
     user_row = cursor.fetchone()
     conn.close()
     
     if not user_row:
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_game_id}`", parse_mode="Markdown")
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
         return
         
     telegram_id = user_row[0]
@@ -323,17 +330,21 @@ async def admin_remove_platform(message: types.Message, state: FSMContext):
         await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/remove_platform [Game_ID] [اسم_المنصة]`\n\n*المنصات المدعومة: TikTok, Instagram, YouTube, Facebook*", parse_mode="Markdown")
         return
     
-    target_game_id = args[1].strip()
+    target_input = args[1].strip()
     platform = args[2].strip()
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s OR telegram_id::text = %s", (target_game_id, target_game_id))
+    cursor.execute("""
+        SELECT telegram_id FROM users 
+        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
+        LIMIT 1
+    """, (target_input, target_input))
     user_row = cursor.fetchone()
     
     if not user_row:
         conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_game_id}`", parse_mode="Markdown")
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
         return
         
     telegram_id = user_row[0]
@@ -482,16 +493,24 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # البحث بالاعتماد على Game_ID أو Telegram_ID
-    cursor.execute("SELECT telegram_id, game_id FROM users WHERE game_id = %s OR telegram_id::text = %s", (target_input, target_input))
+    # البحث الذكي والشامل في جدول المستخدمين أو جدول المقاطع
+    cursor.execute("""
+        SELECT telegram_id, game_id FROM users 
+        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
+        UNION 
+        SELECT telegram_id, NULL as game_id FROM submissions 
+        WHERE telegram_id::text = TRIM(%s)
+        LIMIT 1
+    """, (target_input, target_input, target_input))
     user_info = cursor.fetchone()
+    
     if not user_info:
         conn.close()
         await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: {target_input}")
         return
         
     telegram_id = user_info[0]
-    game_id_val = user_info[1]
+    game_id_val = user_info[1] or "غير مسجل"
     
     cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
     submissions = cursor.fetchall()
@@ -528,15 +547,23 @@ async def search_last_month_user_stats(message: types.Message, state: FSMContext
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id, game_id FROM users WHERE game_id = %s OR telegram_id::text = %s", (target_input, target_input))
+    cursor.execute("""
+        SELECT telegram_id, game_id FROM users 
+        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
+        UNION 
+        SELECT telegram_id, NULL as game_id FROM submissions 
+        WHERE telegram_id::text = TRIM(%s)
+        LIMIT 1
+    """, (target_input, target_input, target_input))
     user_info = cursor.fetchone()
+    
     if not user_info:
         conn.close()
         await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
         return
         
     telegram_id = user_info[0]
-    game_id_val = user_info[1]
+    game_id_val = user_info[1] or "غير مسجل"
     
     cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, prev_month_str))
     submissions = cursor.fetchall()
