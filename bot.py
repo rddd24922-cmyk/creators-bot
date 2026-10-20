@@ -236,7 +236,7 @@ async def admin_panel_handler(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-# --- دالة موحدة ومضمونة لعرض التقرير الشامل (تستدعيها بالأمر أو بالزر) ---
+# --- دالة التقرير الشامل الآمنة (بدون Markdown لتجنب أخطاء الروابط والرموز) ---
 async def execute_stats_report(target_message: types.Message):
     current_month = datetime.now().strftime("%Y-%m")
     try:
@@ -250,7 +250,7 @@ async def execute_stats_report(target_message: types.Message):
             await target_message.answer("⚠️ لا توجد أي حسابات مسجلة في النظام حالياً.")
             return
             
-        report = f"📊 **التفصيل الشامل لإنجازات صناع المحتوى (شهر {current_month}):**\n\n"
+        report = f"📊 التفصيل الشامل لإنجازات صناع المحتوى (شهر {current_month}):\n\n"
         
         for idx, u in enumerate(users, 1):
             t_id, g_id = u[0], u[1] or "غير مسجل"
@@ -266,14 +266,14 @@ async def execute_stats_report(target_message: types.Message):
             total_views = sum(s[1] for s in subs)
             rank = calculate_rank(total_views, v_count)
             
-            report += f"━━━━━━━━━━━━━━━━━━━━\n"
-            report += f"{idx}. 🎮 **Game ID:** `{g_id}`\n"
-            report += f"🆔 **Telegram ID:** `{t_id}`\n"
-            report += f"👁 **إجمالي المشاهدات:** {total_views:,} | 📹 **المقاطع:** {v_count}\n"
-            report += f"🎖 **الرتبة:** {rank}\n"
+            report += f"------------------------------------\n"
+            report += f"{idx}. Game ID: {g_id}\n"
+            report += f"🆔 Telegram ID: {t_id}\n"
+            report += f"👁 إجمالي المشاهدات: {total_views:,} | 📹 المقاطع: {v_count}\n"
+            report += f"🎖 الرتبة: {rank}\n"
             
             if subs:
-                report += "🎬 **المقاطع المسجلة:**\n"
+                report += "🎬 المقاطع المسجلة:\n"
                 for s_idx, sub in enumerate(subs, 1):
                     report += f"   {s_idx}. {sub[0]} (👁 {sub[1]:,})\n"
             else:
@@ -283,13 +283,13 @@ async def execute_stats_report(target_message: types.Message):
         
         if len(report) > 4000:
             for chunk in [report[i:i+4000] for i in range(0, len(report), 4000)]:
-                await target_message.answer(chunk, disable_web_page_preview=True, parse_mode="Markdown")
+                await target_message.answer(chunk, disable_web_page_preview=True)
         else:
-            await target_message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
+            await target_message.answer(report, disable_web_page_preview=True)
             
     except Exception as e:
         logging.error(f"Error in execute_stats_report: {traceback.format_exc()}")
-        await target_message.answer(f"❌ حدث خطأ أثناء جلب التقرير:\n`{str(e)}`", parse_mode="Markdown")
+        await target_message.answer(f"❌ حدث خطأ أثناء جلب التقرير:\n{str(e)}")
 
 @dp.callback_query(F.data.startswith("adm_"))
 async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMContext):
