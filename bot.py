@@ -247,8 +247,54 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
     
     if action == "stats":
         await callback.answer()
-        # محاكاة أمر /stats مباشرة
-        await show_all_creators_detailed_stats_callback(callback.message)
+        current_month = datetime.now().strftime("%Y-%m")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT telegram_id, game_id FROM users ORDER BY registered_at ASC")
+        users = cursor.fetchall()
+        
+        if not users:
+            conn.close()
+            await callback.message.answer("⚠️ لا توجد أي حسابات مسجلة في النظام حالياً.")
+            return
+            
+        report = f"📊 **التفصيل الشامل لإنجازات صناع المحتوى (شهر {current_month}):**\n\n"
+        
+        for idx, u in enumerate(users, 1):
+            t_id, g_id = u[0], u[1] or "غير مسجل"
+            
+            cursor.execute("""
+                SELECT video_url, views FROM submissions 
+                WHERE telegram_id = %s AND submission_month = %s 
+                ORDER BY id ASC
+            """, (t_id, current_month))
+            subs = cursor.fetchall()
+            
+            v_count = len(subs)
+            total_views = sum(s[1] for s in subs)
+            rank = calculate_rank(total_views, v_count)
+            
+            report += f"━━━━━━━━━━━━━━━━━━━━\n"
+            report += f"{idx}. 🎮 **Game ID:** `{g_id}`\n"
+            report += f"🆔 **Telegram ID:** `{t_id}`\n"
+            report += f"👁 **إجمالي المشاهدات:** {total_views:,} | 📹 **المقاطع:** {v_count}\n"
+            report += f"🎖 **الرتبة:** {rank}\n"
+            
+            if subs:
+                report += "🎬 **المقاطع المسجلة:**\n"
+                for s_idx, sub in enumerate(subs, 1):
+                    report += f"   {s_idx}. {sub[0]} (👁 {sub[1]:,})\n"
+            else:
+                report += "   ⚠️ لا توجد مقاطع لهذا الشهر.\n"
+                
+        conn.close()
+        
+        if len(report) > 4000:
+            for chunk in [report[i:i+4000] for i in range(0, len(report), 4000)]:
+                await callback.message.answer(chunk, disable_web_page_preview=True, parse_mode="Markdown")
+        else:
+            await callback.message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
+
     elif action == "platforms":
         await callback.answer()
         await show_pending_platforms_callback(callback.message)
