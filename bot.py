@@ -19,6 +19,9 @@ ADMIN_GROUP_ID = -1003968149974
 
 ADMIN_IDS = [ADMIN_GROUP_ID, 556767982, 8890083481]
 
+# متغير للتحكم بقفل أو فتح استقبال المقاطع
+SUBMISSIONS_LOCKED = False
+
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
@@ -129,6 +132,28 @@ def calculate_rank(views, videos_count):
     else:
         return "📌 مرشح (لم يستوفِ الحد الأدنى من شروط الرتب)"
 
+def get_next_rank_progress(views, videos_count):
+    # ترتيب المستويات تصاعدياً من الأقل للأعلى مع شروطها (المشاهدات، المقاطع)
+    ranks_tiers = [
+        (50, 1, "🌱 مبتدئ"),
+        (150, 5, "🛡️ مجند"),
+        (1500, 8, "⚔️ محارب"),
+        (5000, 12, "⭐ فارس"),
+        (15000, 15, "🎖 قائد"),
+        (50000, 20, "🔥 زعيم"),
+        (100000, 20, "⚡ سلطان"),
+        (500000, 20, "🏆 أسطورة"),
+        (1000000, 20, "💎 أيقونة"),
+        (2000000, 60, "👑 إمبراطور")
+    ]
+    
+    for req_v, req_c, r_name in ranks_tiers:
+        if views < req_v or videos_count < req_c:
+            diff_views = max(0, req_v - views)
+            diff_videos = max(0, req_c - videos_count)
+            return f"🎯 للوصول إلى رتبة ({r_name}) يتبقى لك: **{diff_views:,}** مشاهدة و **{diff_videos}** مقطع."
+    return "🎉 لقد وصلت إلى أعلى رتبة نهائية (إمبراطور)! مبروك!"
+
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="إرسال مقطع جديد"), KeyboardButton(text="طلب إضافة منصة")],
@@ -191,6 +216,25 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
+# --- أوامر قفل وفتح استقبال المقاطع ---
+@dp.message(Command("lock"))
+async def lock_submissions(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    global SUBMISSIONS_LOCKED
+    SUBMISSIONS_LOCKED = True
+    await state.clear()
+    await message.answer("🔒 **تم قفل نظام إرسال المقاطع بنجاح.**\nلن يتمكن صناع المحتوى من إرسال روابط جديدة حتى يتم فتح النظام.", parse_mode="Markdown")
+
+@dp.message(Command("unlock"))
+async def unlock_submissions(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    global SUBMISSIONS_LOCKED
+    SUBMISSIONS_LOCKED = False
+    await state.clear()
+    await message.answer("🔓 **تم فتح نظام إرسال المقاطع بنجاح.**\nيمكن لصناع المحتوى الآن إرسال مقاطعهم كفترة سابقة.", parse_mode="Markdown")
+
 @dp.message(Command("broadcast"))
 async def broadcast_message(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -221,7 +265,6 @@ async def broadcast_message(message: types.Message, state: FSMContext):
             failed_count += 1
     await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال: `{failed_count}`", parse_mode="Markdown")
 
-# --- أمر إداري معدل لإزالة المنصة باستخدام Game ID ---
 @dp.message(Command("remove_platform"))
 async def admin_remove_platform(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -237,7 +280,6 @@ async def admin_remove_platform(message: types.Message, state: FSMContext):
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    # البحث عن telegram_id المرتبط بمعرّف اللعبة
     cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
     user_row = cursor.fetchone()
     
@@ -744,6 +786,12 @@ URL_PATTERNS = {
 async def start_submission(message: types.Message, state: FSMContext):
     if not is_allowed(message.from_user.id):
         return
+    
+    # فحص ما إذا كان البوت مقفلاً من قِبل المشرفين
+    if SUBMISSIONS_LOCKED and not is_admin(message.from_user.id):
+        await message.answer("🔒 **عذراً، نظام استقبال المقاطع مقفل حالياً من قِبل الإدارة.**\nيرجى الانتظار حتى يتم فتح البوت مجدداً.", parse_mode="Markdown")
+        return
+
     await state.clear()
     telegram_id = message.from_user.id
     conn = get_db_connection()
@@ -784,7 +832,6 @@ async def process_video_url(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # حفظ الرابط مؤقتاً والانتقال لطلب عدد المشاهدات فوراً
     await state.update_data(pending_url=clean_url, matched_platform=matched_platform)
     await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالي لهذا المقطع (أرقام صحيحة فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
     await state.set_state(Form.waiting_for_manual_views)
@@ -812,16 +859,21 @@ async def process_manual_views(message: types.Message, state: FSMContext):
     try:
         cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (telegram_id, clean_url, views, current_month, now))
         conn.commit()
+        
         cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
         stats = cursor.fetchone()
-        current_rank = calculate_rank(stats[1] or views, stats[0] or 1)
+        v_count, total_views = stats[0] or 1, stats[1] or views
+        
+        current_rank = calculate_rank(total_views, v_count)
+        next_rank_msg = get_next_rank_progress(total_views, v_count)
         
         await message.answer(
             f"✅ **تم تسجيل المقطع والمشاهدات بنجاح!**\n"
             f"📹 المنصة: {matched_platform}\n"
             f"👁 المشاهدات المسجلة: {views:,}\n"
-            f"📊 إجمالي مقاطعك هذا الشهر: {stats[0]}\n"
-            f"رتبتك الحالية: {current_rank}",
+            f"📊 إجمالي مقاطعك هذا الشهر: {v_count} | إجمالي المشاهدات: {total_views:,}\n\n"
+            f"🎖 رتبتك الحالية: {current_rank}\n"
+            f"{next_rank_msg}",
             reply_markup=main_keyboard,
             parse_mode="Markdown"
         )
