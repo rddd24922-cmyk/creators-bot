@@ -213,80 +213,6 @@ async def report_scheduler():
                             logging.error(f"Failed to send monthly report: {e}")
         await asyncio.sleep(60)
 
-@dp.message(Command("fix_user"))
-async def admin_fix_user(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
-    args = message.text.split()
-    if len(args) < 3 or not args[1].isdigit() or not args[2].isdigit():
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/fix_user [Telegram_ID] [Game_ID]`", parse_mode="Markdown")
-        return
-    
-    target_telegram_id = int(args[1].strip())
-    target_game_id = args[2].strip()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            INSERT INTO users (telegram_id, game_id, registered_at) 
-            VALUES (%s, %s, %s)
-            ON CONFLICT (telegram_id) 
-            DO UPDATE SET game_id = EXCLUDED.game_id
-        """, (target_telegram_id, target_game_id, now))
-        conn.commit()
-        await message.answer(f"✅ تم ربط المستخدم بنجاح!\n🆔 Telegram ID: `{target_telegram_id}`\n🎮 Game ID: `{target_game_id}`", parse_mode="Markdown")
-    except Exception as e:
-        conn.rollback()
-        await message.answer(f"❌ حدث خطأ أثناء الربط:\n`{str(e)}`", parse_mode="Markdown")
-    finally:
-        conn.close()
-
-@dp.message(Command("fix_submissions"))
-async def admin_fix_submissions(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
-    args = message.text.split()
-    if len(args) < 3 or not args[1].isdigit() or not args[2].isdigit():
-        await message.answer("⚠️ طريقة الاستخدام:\n`/fix_submissions [الرقم_القديم] [الرقم_الصحيح]`", parse_mode="Markdown")
-        return
-    
-    old_id = int(args[1].strip())
-    new_id = int(args[2].strip())
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE submissions SET telegram_id = %s WHERE telegram_id = %s", (new_id, old_id))
-    updated_count = cursor.rowcount
-    conn.commit()
-    conn.close()
-    
-    await message.answer(f"✅ تم نقل وتحديث **{updated_count}** مقطع بنجاح من المعرّف `{old_id}` إلى المعرّف الجديد `{new_id}`!", parse_mode="Markdown")
-
-@dp.message(Command("delete_game_id"))
-async def admin_delete_game_id(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/delete_game_id [Game_ID]`", parse_mode="Markdown")
-        return
-    target_game_id = args[1].strip()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM users WHERE game_id = %s", (target_game_id,))
-    count = cursor.rowcount
-    conn.commit()
-    conn.close()
-    await message.answer(f"✅ تم حذف عدد ({count}) سجل معلق مرتبط بمعرّف اللعبة `{target_game_id}` بنجاح.", parse_mode="Markdown")
-
 @dp.message(Command("send"))
 async def send_direct_message(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -298,30 +224,23 @@ async def send_direct_message(message: types.Message, state: FSMContext):
         await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/send [Game_ID] [نص الرسالة]`", parse_mode="Markdown")
         return
     
-    target_input = args[1].strip()
+    target_game_id = args[1].strip()
     msg_text = args[2].strip()
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        UNION 
-        SELECT telegram_id FROM submissions 
-        WHERE telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input, target_input))
+    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
     user_row = cursor.fetchone()
     conn.close()
     
     if not user_row:
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: `{target_game_id}`", parse_mode="Markdown")
         return
         
     telegram_id = user_row[0]
     try:
         await bot.send_message(telegram_id, f"📬 **رسالة خاصة من الإدارة:**\n\n{msg_text}", parse_mode="Markdown")
-        await message.answer(f"✅ تم إرسال الرسالة إلى صانع المحتوى بنجاح!", parse_mode="Markdown")
+        await message.answer(f"✅ تم إرسال الرسالة إلى صانع المحتوى (Game ID: `{target_game_id}`) بنجاح!", parse_mode="Markdown")
     except Exception as e:
         await message.answer(f"❌ فشل إرسال الرسالة:\n`{str(e)}`", parse_mode="Markdown")
 
@@ -340,6 +259,7 @@ async def admin_remove_video(message: types.Message, state: FSMContext):
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # جلب صاحب المقطع قبل حذفه لكي نتمكن من إرسال إشعار له
     cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
     sub_row = cursor.fetchone()
     
@@ -348,6 +268,7 @@ async def admin_remove_video(message: types.Message, state: FSMContext):
         conn.commit()
         conn.close()
         
+        # إرسال إشعار لصانع المحتوى تلقائياً
         if sub_row:
             creator_telegram_id = sub_row[0]
             try:
@@ -404,28 +325,24 @@ async def admin_remove_platform(message: types.Message, state: FSMContext):
         await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/remove_platform [Game_ID] [اسم_المنصة]`\n\n*المنصات المدعومة: TikTok, Instagram, YouTube, Facebook*", parse_mode="Markdown")
         return
     
-    target_input = args[1].strip()
+    target_game_id = args[1].strip()
     platform = args[2].strip()
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
+    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
     user_row = cursor.fetchone()
     
     if not user_row:
         conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: `{target_game_id}`", parse_mode="Markdown")
         return
         
     telegram_id = user_row[0]
     cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform = %s", (telegram_id, platform))
     if cursor.rowcount > 0:
         conn.commit()
-        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح.", parse_mode="Markdown")
+        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى (Game ID: `{target_game_id}`) بنجاح.", parse_mode="Markdown")
     else:
         await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.", parse_mode="Markdown")
     conn.close()
@@ -560,39 +477,29 @@ async def search_user_stats(message: types.Message, state: FSMContext):
     await state.clear()
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام: /user [Game_ID أو Telegram_ID]")
+        await message.answer("⚠️ طريقة الاستخدام: /user [Game_ID]")
         return
-    target_input = args[1].strip()
+    target_game_id = args[1].strip()
     current_month = datetime.now().strftime("%Y-%m")
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT telegram_id, game_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
+    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
     user_info = cursor.fetchone()
-    
     if not user_info:
         conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: {target_game_id}")
         return
-        
     telegram_id = user_info[0]
-    game_id_val = user_info[1] or "غير مسجل"
-    
     cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
     submissions = cursor.fetchall()
     cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
     stats = cursor.fetchone()
     conn.close()
-    
     v_count, total_views = stats[0] or 0, stats[1] or 0
     rank = calculate_rank(total_views, v_count)
-    report = f"👤 **تقرير صانع المحتوى:**\n🎮 **Game ID:** `{game_id_val}`\n🆔 **Telegram ID:** `{telegram_id}`\n👁 **إجمالي المشاهدات:** {total_views:,}\n📹 **عدد الفيديوهات:** {v_count}\n🎖 **الرتبة:** {rank}\n\n"
+    report = f"👤 تقرير إنجازات صانع المحتوى ({target_game_id}) - الشهر الحالي ({current_month}):\n🆔 Telegram ID: `{telegram_id}`\nإجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nالرتبة: {rank}\n\n"
     if submissions:
-        report += "🎬 **سجل المقاطع:**\n"
+        report += "سجل المقاطع:\n"
         for idx, sub in enumerate(submissions, 1):
             report += f"{idx}. {sub[0]} - المشاهدات: {sub[1]:,}\n"
     else:
@@ -609,7 +516,7 @@ async def search_last_month_user_stats(message: types.Message, state: FSMContext
         await message.answer("⚠️ طريقة الاستخدام:\n`/last_month_user [Game_ID]`", parse_mode="Markdown")
         return
         
-    target_input = args[1].strip()
+    target_game_id = args[1].strip()
     now = datetime.now()
     first_day_of_current_month = now.replace(day=1)
     last_day_of_prev_month = first_day_of_current_month - timedelta(days=1)
@@ -617,21 +524,14 @@ async def search_last_month_user_stats(message: types.Message, state: FSMContext
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id, game_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
+    cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (target_game_id,))
     user_info = cursor.fetchone()
-    
     if not user_info:
         conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
+        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف اللعبة: `{target_game_id}`", parse_mode="Markdown")
         return
         
     telegram_id = user_info[0]
-    game_id_val = user_info[1] or "غير مسجل"
-    
     cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, prev_month_str))
     submissions = cursor.fetchall()
     cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, prev_month_str))
@@ -642,7 +542,7 @@ async def search_last_month_user_stats(message: types.Message, state: FSMContext
     rank = calculate_rank(total_views, v_count)
     
     report = f"📜 **تقرير إنجازات صانع المحتوى للشهر الماضي ({prev_month_str}):**\n"
-    report += f"🎮 **Game ID:** `{game_id_val}`\n"
+    report += f"🎮 **Game ID:** `{target_game_id}`\n"
     report += f"🆔 **Telegram ID:** `{telegram_id}`\n"
     report += f"👁 **إجمالي المشاهدات:** {total_views:,}\n"
     report += f"📹 **عدد المقاطع:** {v_count}\n"
