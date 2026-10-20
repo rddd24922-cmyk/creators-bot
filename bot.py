@@ -3,6 +3,7 @@ import logging
 import os
 import asyncio
 import calendar
+import traceback
 from datetime import datetime, timedelta
 import psycopg2
 import psycopg2.extras
@@ -768,8 +769,9 @@ async def start_creator_update_views(message: types.Message, state: FSMContext):
         await message.answer(text, reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_new_views)
     except Exception as e:
-        logging.error(f"Error in creator update views: {e}")
-        await message.answer("❌ حدث خطأ أثناء جلب مقاطعك، يرجى المحاولة مرة أخرى أو التواصل مع المشرف.", reply_markup=main_keyboard)
+        # طباعة الخطأ التفصيلي بالكامل في سجلات Railway (Logs) لتشخيصه بدقة
+        logging.error(f"Error in start_creator_update_views: {traceback.format_exc()}")
+        await message.answer(f"❌ حدث خطأ تقني:\n`{str(e)}`", parse_mode="Markdown", reply_markup=main_keyboard)
 
 @dp.message(Form.waiting_for_new_views)
 async def process_creator_new_views(message: types.Message, state: FSMContext):
