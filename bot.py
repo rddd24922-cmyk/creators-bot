@@ -258,13 +258,32 @@ async def admin_remove_video(message: types.Message, state: FSMContext):
     video_url = args[1].strip()
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # جلب صاحب المقطع قبل حذفه لكي نتمكن من إرسال إشعار له
+    cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
+    sub_row = cursor.fetchone()
+    
     cursor.execute("DELETE FROM submissions WHERE video_url = %s", (video_url,))
     if cursor.rowcount > 0:
         conn.commit()
-        await message.answer(f"✅ تم حذف المقطع بنجاح من النظام:\n`{video_url}`", parse_mode="Markdown")
+        conn.close()
+        
+        # إرسال إشعار لصانع المحتوى تلقائياً
+        if sub_row:
+            creator_telegram_id = sub_row[0]
+            try:
+                await bot.send_message(
+                    creator_telegram_id, 
+                    f"⚠️ **تنبيه من الإدارة:**\nتم حذف مقطعك التالي لكونه غير صالح أو مخالف:\n`{video_url}`", 
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+                
+        await message.answer(f"✅ تم حذف المقطع بنجاح وإبلاغ صاحب المحتوى:\n`{video_url}`", parse_mode="Markdown")
     else:
+        conn.close()
         await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
-    conn.close()
 
 @dp.message(Command("broadcast"))
 async def broadcast_message(message: types.Message, state: FSMContext):
