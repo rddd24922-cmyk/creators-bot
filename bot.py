@@ -1,30 +1,27 @@
-import re
-import logging
 import os
+import re
 import asyncio
+import logging
 import calendar
-import traceback
 from datetime import datetime, timedelta
 import psycopg2
-import psycopg2.extras
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+import discord
+from discord import app_commands
+from discord.ext import commands
 
-TOKEN = os.getenv("BOT_TOKEN")
+# --- المتغيرات البيئية ---
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_GROUP_ID = -1003968149974
-
-ADMIN_IDS = [ADMIN_GROUP_ID, 556767982]
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
 
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- قاعدة البيانات ---
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
@@ -33,13 +30,13 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS whitelist (
-            telegram_id BIGINT PRIMARY KEY,
+            discord_id BIGINT PRIMARY KEY,
             added_at TEXT
         )
     """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            telegram_id BIGINT PRIMARY KEY,
+            discord_id BIGINT PRIMARY KEY,
             game_id TEXT UNIQUE,
             registered_at TEXT
         )
@@ -47,17 +44,17 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS creator_platforms (
             id SERIAL PRIMARY KEY,
-            telegram_id BIGINT,
+            discord_id BIGINT,
             platform TEXT,
             status TEXT DEFAULT 'pending',
             requested_at TEXT,
-            UNIQUE(telegram_id, platform)
+            UNIQUE(discord_id, platform)
         )
     """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id SERIAL PRIMARY KEY,
-            telegram_id BIGINT,
+            discord_id BIGINT,
             video_url TEXT UNIQUE,
             views INTEGER DEFAULT 0,
             submission_month TEXT,
@@ -69,51 +66,20 @@ def init_db():
 
 init_db()
 
-def is_admin(telegram_id: int) -> bool:
-    return telegram_id in ADMIN_IDS
+# --- التحقق من الصلاحيات ---
+def is_admin(interaction: discord.Interaction) -> bool:
+    # يمكنك تعديل الشرط هنا ليتطابق مع صلاحيات المشرفين في سيرفرك (رتبة أو أيدي محدد)
+    return interaction.user.guild_permissions.administrator
 
-def is_allowed(telegram_id: int) -> bool:
-    if telegram_id in ADMIN_IDS:
-        return True
+def is_allowed(discord_id: int) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM whitelist WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute("SELECT discord_id FROM whitelist WHERE discord_id = %s", (discord_id,))
     res = cursor.fetchone()
     conn.close()
-    return res is not None
+    return res is not None or is_admin
 
-def get_user_platforms(telegram_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT platform, status FROM creator_platforms WHERE telegram_id = %s", (telegram_id,))
-    res = cursor.fetchall()
-    conn.close()
-    return {row[0]: row[1] for row in res}
-
-def clean_old_submissions():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    expiry_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("DELETE FROM submissions WHERE created_at < %s", (expiry_date,))
-    conn.commit()
-    conn.close()
-
-class Form(StatesGroup):
-    waiting_for_game_id = State()
-    waiting_for_update_game_id = State()
-    waiting_for_platform_choice = State()
-    waiting_for_video_url = State()
-    waiting_for_manual_views = State()
-    waiting_for_new_views = State()
-    waiting_for_broadcast = State()
-    waiting_for_stats_game_id = State()
-    waiting_for_send_msg_input = State()
-    waiting_for_remove_video_url = State()
-    waiting_for_set_views_input = State()
-    waiting_for_allow_id = State()
-    waiting_for_remove_platform_input = State()
-    waiting_for_last_month_input = State()
-
+# --- حساب الرتب ---
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
         return "👑 إمبراطور (مكافأة 24,000 صدفة + تأهل لجائزة طماطم بلس)"
@@ -138,1264 +104,6 @@ def calculate_rank(views, videos_count):
     else:
         return "📌 مرشح (لم يستوفِ الحد الأدنى من شروط الرتب)"
 
-def get_next_rank_progress(views, videos_count):
-    ranks_tiers = [
-        (50, 1, "🌱 مبتدئ"),
-        (150, 5, "🛡️ مجند"),
-        (1500, 8, "⚔️ محارب"),
-        (5000, 12, "⭐ فارس"),
-        (15000, 15, "🎖 قائد"),
-        (50000, 20, "🔥 زعيم"),
-        (100000, 20, "⚡ سلطان"),
-        (500000, 20, "🏆 أسطورة"),
-        (1000000, 20, "💎 أيقونة"),
-        (2000000, 60, "👑 إمبراطور")
-    ]
-    
-    for req_v, req_c, r_name in ranks_tiers:
-        if views < req_v or videos_count < req_c:
-            diff_views = max(0, req_v - views)
-            diff_videos = max(0, req_c - videos_count)
-            return f"🎯 للوصول إلى رتبة ({r_name}) يتبقى لك: **{diff_views:,}** مشاهدة و **{diff_videos}** مقطع."
-    return "🎉 لقد وصلت إلى أعلى رتبة نهائية (إمبراطور)! مبروك!"
-
-main_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="إرسال مقطع جديد"), KeyboardButton(text="طلب إضافة منصة")],
-        [KeyboardButton(text="مقاطعي هذا الشهر"), KeyboardButton(text="حسابي المعرّف")],
-        [KeyboardButton(text="تعديل المعرّف"), KeyboardButton(text="تعديل مشاهدات مقطع")]
-    ],
-    resize_keyboard=True
-)
-
-cancel_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="إلغاء")]
-    ],
-    resize_keyboard=True
-)
-
-platforms_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="TikTok"), KeyboardButton(text="Instagram")],
-        [KeyboardButton(text="YouTube"), KeyboardButton(text="Facebook")],
-        [KeyboardButton(text="إلغاء")]
-    ],
-    resize_keyboard=True
-)
-
-async def report_scheduler():
-    last_monthly_report_month = ""
-    while True:
-        clean_old_submissions()
-        now = datetime.now()
-        current_month_str = now.strftime("%Y-%m")
-        last_day_of_month = calendar.monthrange(now.year, now.month)[1]
-        
-        if now.day == last_day_of_month and now.hour == 23 and now.minute == 30:
-            if last_monthly_report_month != current_month_str:
-                if ADMIN_GROUP_ID != 0:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT u.game_id, COUNT(s.id), SUM(s.views), u.telegram_id
-                        FROM users u
-                        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = %s
-                        GROUP BY u.telegram_id, u.game_id
-                    """, (current_month_str,))
-                    creators = cursor.fetchall()
-                    conn.close()
-                    
-                    if creators:
-                        monthly_text = f"🏆 **التقرير الشهري الختامي لصناع المحتوى (شهر {current_month_str}):**\n\n"
-                        for idx, c in enumerate(creators, 1):
-                            v_count = c[1] or 0
-                            v_views = c[2] or 0
-                            telegram_id = c[3]
-                            rank = calculate_rank(v_views, v_count)
-                            monthly_text += f"{idx}. 🎮 Game ID: `{c[0]}` | 🆔 Telegram ID: `{telegram_id}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة المستحقة: {rank}\n\n"
-                        try:
-                            await bot.send_message(ADMIN_GROUP_ID, monthly_text, parse_mode="Markdown")
-                            last_monthly_report_month = current_month_str
-                        except Exception as e:
-                            logging.error(f"Failed to send monthly report: {e}")
-        await asyncio.sleep(60)
-
-@dp.message(Command("admin", "panel"))
-async def admin_panel_handler(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    
-    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📊 التقرير الشامل لصانع محتوى", callback_data="adm_stats")
-        ],
-        [
-            InlineKeyboardButton(text="🔔 طلبات المنصات", callback_data="adm_platforms"),
-            InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="adm_broadcast")
-        ],
-        [
-            InlineKeyboardButton(text="✉️ إرسال رسالة خاصة", callback_data="adm_send")
-        ],
-        [
-            InlineKeyboardButton(text="⚙️ تعديل مشاهدات", callback_data="adm_setviews"),
-            InlineKeyboardButton(text="🗑 حذف مقطع", callback_data="adm_delvideo")
-        ],
-        [
-            InlineKeyboardButton(text="➕ إضافة معتمد", callback_data="adm_allow"),
-            InlineKeyboardButton(text="➖ إزالة منصة", callback_data="adm_delplat")
-        ],
-        [
-            InlineKeyboardButton(text="📈 الإحصائيات والملخص", callback_data="adm_summary"),
-            InlineKeyboardButton(text="📜 تقرير الشهر الماضي", callback_data="adm_lastmonth")
-        ]
-    ])
-    
-    await message.answer(
-        "⚡ **أهلاً بك يا مشرف النظام في لوحة التحكم الإدارية:**\nاختر أحد الأوامر التالية للتحكم الكامل بالنظام:",
-        reply_markup=admin_keyboard,
-        parse_mode="Markdown"
-    )
-
-async def process_specific_creator_stats(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-        
-    target_input = message.text.strip()
-    await state.clear()
-    
-    current_month = datetime.now().strftime("%Y-%m")
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT telegram_id, game_id FROM users 
-            WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-            LIMIT 1
-        """, (target_input, target_input))
-        user_row = cursor.fetchone()
-        
-        if not user_row:
-            conn.close()
-            await message.answer(f"❌ لم يتم العثور على أي صانع محتوى بمعرّف: `{target_input}`", reply_markup=main_keyboard)
-            return
-            
-        t_id, g_id = user_row[0], user_row[1] or "غير مسجل"
-        
-        cursor.execute("""
-            SELECT video_url, views FROM submissions 
-            WHERE telegram_id = %s AND submission_month = %s 
-            ORDER BY id ASC
-        """, (t_id, current_month))
-        subs = cursor.fetchall()
-        conn.close()
-        
-        v_count = len(subs)
-        total_views = sum(s[1] for s in subs)
-        rank = calculate_rank(total_views, v_count)
-        
-        report = f"📊 **تقرير إنجازات صانع المحتوى (شهر {current_month}):**\n\n"
-        report += f"🎮 Game ID: {g_id}\n"
-        report += f"🆔 Telegram ID: {t_id}\n"
-        report += f"👁 إجمالي المشاهدات: {total_views:,} | 📹 المقاطع: {v_count}\n"
-        report += f"🎖 الرتبة: {rank}\n\n"
-        
-        if subs:
-            report += "🎬 المقاطع المسجلة:\n"
-            for s_idx, sub in enumerate(subs, 1):
-                report += f"   {s_idx}. {sub[0]} (👁 {sub[1]:,})\n"
-        else:
-            report += "⚠️ لا توجد مقاطع مسجلة لهذا اللاعب في هذا الشهر.\n"
-            
-        await message.answer(report, disable_web_page_preview=True)
-        
-    except Exception as e:
-        logging.error(f"Error in process_specific_creator_stats: {traceback.format_exc()}")
-        await message.answer(f"❌ حدث خطأ تقني:\n{str(e)}")
-
-@dp.callback_query(F.data.startswith("adm_"))
-async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("ليس لديك صلاحية.", show_alert=True)
-        return
-        
-    action = callback.data.split("_")[1]
-    
-    if action == "stats":
-        await callback.answer()
-        await callback.message.answer("🔍 أرسل الآن **معرّف اللعبة (Game ID)** لصانع المحتوى الذي تريد استخراج تقريره:", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_stats_game_id)
-    elif action == "platforms":
-        await callback.answer()
-        await show_pending_platforms_callback(callback.message)
-    elif action == "broadcast":
-        await callback.answer()
-        await callback.message.answer("📢 أرسل الآن النص الذي تريد بثه لجميع صناع المحتوى:", reply_markup=cancel_keyboard)
-        await state.set_state(Form.waiting_for_broadcast)
-    elif action == "send":
-        await callback.answer()
-        await callback.message.answer("✉️ أرسل الرسالة بالشكل التالي:\n`[Game_ID] [نص الرسالة]`", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_send_msg_input)
-    elif action == "delvideo":
-        await callback.answer()
-        await callback.message.answer("🗑 أرسل **رابط المقطع** الذي تريد حذفه:", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_remove_video_url)
-    elif action == "setviews":
-        await callback.answer()
-        await callback.message.answer("⚙️ أرسل **رابط المقطع** أولاً:", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_set_views_input)
-    elif action == "allow":
-        await callback.answer()
-        await callback.message.answer("➕ أرسل **Telegram ID** للحساب المراد اعتماده في النظام:", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_allow_id)
-    elif action == "delplat":
-        await callback.answer()
-        await callback.message.answer("➖ أرسل معرّف اللاعب واسم المنصة (مثال: `0000 TikTok`):", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_remove_platform_input)
-    elif action == "summary":
-        await callback.answer()
-        message_obj = callback.message
-        await admin_summary_handler(message_obj, state)
-    elif action == "lastmonth":
-        await callback.answer()
-        await callback.message.answer("📜 أرسل **Game ID** أو **Telegram ID** للاستعلام عن تقرير الشهر الماضي:", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_last_month_input)
-
-# --- معالجة الإلغاء الشاملة والآمنة لجميع الحالات ---
-@dp.message(F.text.in_({"إلغاء", "كنسل"}))
-@dp.message(Command("cancel", "cancle", "reset", "fix"))
-async def global_cancel_handler(message: types.Message, state: FSMContext):
-    telegram_id = message.from_user.id
-    if not is_allowed(telegram_id) and not is_admin(telegram_id):
-        return
-    await state.clear()
-    await message.answer("🔄 تم إلغاء العملية بنجاح والعودة للقائمة الرئيسية.", reply_markup=main_keyboard)
-
-@dp.message(Command("start"))
-async def start_command_handler(message: types.Message, state: FSMContext):
-    telegram_id = message.from_user.id
-    if not is_allowed(telegram_id):
-        await message.answer("⛔ عذراً، هذا البوت مخصص لصناع المحتوى المعتمدين فقط.")
-        return
-    await state.clear()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
-    user = cursor.fetchone()
-    conn.close()
-    if user:
-        await message.answer(f"أهلاً بك مجدداً! معرّف اللعبة المسجل بحسابك: {user[0]}", reply_markup=main_keyboard)
-    else:
-        await message.answer("أهلاً بك! يرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
-        await state.set_state(Form.waiting_for_game_id)
-
-@dp.message(Form.waiting_for_stats_game_id)
-async def receive_stats_game_id(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await process_specific_creator_stats(message, state)
-
-@dp.message(Form.waiting_for_send_msg_input)
-async def receive_send_msg_input(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`[Game_ID] [نص الرسالة]`", parse_mode="Markdown")
-        return
-    target_input = args[0].strip()
-    msg_text = args[1].strip()
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
-    user_row = cursor.fetchone()
-    conn.close()
-    
-    if not user_row:
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
-        return
-        
-    telegram_id = user_row[0]
-    try:
-        await bot.send_message(telegram_id, f"📬 **رسالة خاصة من الإدارة:**\n\n{msg_text}", parse_mode="Markdown")
-        await message.answer(f"✅ تم إرسال الرسالة إلى صانع المحتوى بنجاح!", parse_mode="Markdown")
-    except Exception as e:
-        await message.answer(f"❌ فشل إرسال الرسالة:\n`{str(e)}`", parse_mode="Markdown")
-
-@dp.message(Form.waiting_for_remove_video_url)
-async def receive_remove_video_url(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    video_url = message.text.strip()
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
-    sub_row = cursor.fetchone()
-    
-    cursor.execute("DELETE FROM submissions WHERE video_url = %s", (video_url,))
-    if cursor.rowcount > 0:
-        conn.commit()
-        conn.close()
-        
-        if sub_row:
-            creator_telegram_id = sub_row[0]
-            try:
-                await bot.send_message(
-                    creator_telegram_id, 
-                    f"⚠️ **تنبيه من الإدارة:**\nتم حذف مقطعك التالي لكونه غير صالح أو مخالف:\n`{video_url}`", 
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-                
-        await message.answer(f"✅ تم حذف المقطع بنجاح وإبلاغ صاحب المحتوى:\n`{video_url}`", parse_mode="Markdown")
-    else:
-        conn.close()
-        await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
-
-@dp.message(Form.waiting_for_set_views_input)
-async def receive_set_views_input(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-
-    text = message.text.strip()
-    data = await state.get_data()
-
-    if "target_video_url" not in data:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT video_url FROM submissions WHERE video_url = %s", (text,))
-        exists = cursor.fetchone()
-        conn.close()
-
-        if not exists:
-            await message.answer("❌ هذا الرابط غير مسجل في النظام. أرسل **رابط المقطع** الصحيح:", reply_markup=cancel_keyboard)
-            return
-
-        await state.update_data(target_video_url=text)
-        await message.answer(f"📊 الرابط المختار:\n`{text}`\n\nالآن أرسل **عدد المشاهدات الجديد** (أرقام فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        return
-
-    if not text.isdigit():
-        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
-        return
-
-    new_views = int(text)
-    video_url = data.get("target_video_url")
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
-    sub_row = cursor.fetchone()
-
-    cursor.execute("UPDATE submissions SET views = %s WHERE video_url = %s", (new_views, video_url))
-    if cursor.rowcount > 0:
-        conn.commit()
-        conn.close()
-
-        if sub_row:
-            creator_telegram_id = sub_row[0]
-            try:
-                await bot.send_message(
-                    creator_telegram_id,
-                    f"⚙️ **تنبيه من الإدارة:**\nتم تعديل مشاهدات مقطعك:\n`{video_url}`\nلتصبح المشاهدات الجديدة: **{new_views:,}** مشاهدة.",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-
-        await state.clear()
-        await message.answer(f"✅ تم تحديث مشاهدات المقطع إلى: **{new_views:,}** مشاهدة بنجاح وإبلاغ صاحب المحتوى!")
-    else:
-        conn.close()
-        await state.clear()
-        await message.answer("❌ حدث خطأ، لم يتم العثور على الرابط مسجلاً.")
-
-@dp.message(Form.waiting_for_allow_id)
-async def receive_allow_id(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    text_input = message.text.strip()
-    if not text_input.isdigit():
-        await message.answer("⚠️ يرجى إرسال Telegram ID صحيح من أرقام فقط.")
-        return
-    target_id = int(text_input)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO whitelist (telegram_id, added_at) VALUES (%s, %s)", (target_id, now))
-        conn.commit()
-        await message.answer(f"✅ تمت إضافة الحساب {target_id} بنجاح.")
-    except psycopg2.IntegrityError:
-        conn.rollback()
-        await message.answer("⚠️ الحساب مضاف مسبقاً.")
-    finally:
-        conn.close()
-
-@dp.message(Form.waiting_for_remove_platform_input)
-async def receive_remove_platform_input(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.strip().split()
-    if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`[Game_ID] [اسم_المنصة]`\n*(مثال: 0000 TikTok)*", parse_mode="Markdown")
-        return
-    
-    target_input = None
-    platform = None
-    for arg in args:
-        if arg.isdigit():
-            target_input = arg
-        else:
-            platform = arg
-            
-    if not target_input or not platform:
-        await message.answer("❌ يرجى التأكد من كتابة المعرّف واسم المنصة بشكل صحيح.", parse_mode="Markdown")
-        return
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
-    user_row = cursor.fetchone()
-    
-    if not user_row:
-        conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
-        return
-        
-    telegram_id = user_row[0]
-    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform ILIKE %s", (telegram_id, platform))
-    if cursor.rowcount > 0:
-        conn.commit()
-        conn.close()
-        try:
-            await bot.send_message(
-                telegram_id, 
-                f"⚠️ **تنبيه من الإدارة:**\nتمت إزالة اعتماد منصة **{platform}** الخاصة بك من النظام.", 
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح وإبلاغه.", parse_mode="Markdown")
-    else:
-        conn.close()
-        actual_plats = get_user_platforms(telegram_id)
-        plats_list = ", ".join(actual_plats.keys()) if actual_plats else "لا توجد منصات مسجلة"
-        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.\nالمنصات المسجلة فعلياً لديه هي: ({plats_list})", parse_mode="Markdown")
-        return
-
-@dp.message(Form.waiting_for_last_month_input)
-async def receive_last_month_input(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    target_input = message.text.strip()
-    
-    now = datetime.now()
-    first_day_of_current_month = now.replace(day=1)
-    last_day_of_prev_month = first_day_of_current_month - timedelta(days=1)
-    prev_month_str = last_day_of_prev_month.strftime("%Y-%m")
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id, game_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
-    user_info = cursor.fetchone()
-    
-    telegram_id = None
-    game_id_val = "غير مسجل"
-    
-    if user_info:
-        telegram_id = user_info[0]
-        game_id_val = user_info[1] or "غير مسجل"
-    else:
-        if target_input.isdigit():
-            telegram_id = int(target_input)
-            
-    if not telegram_id:
-        conn.close()
-        await message.answer(f"❌ لم يتم العثور على أي بيانات مسجلة بمعرّف: `{target_input}`", parse_mode="Markdown")
-        return
-    
-    cursor.execute("""
-        SELECT video_url, views, created_at FROM submissions 
-        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
-        AND submission_month = %s 
-        ORDER BY id ASC
-    """, (telegram_id, target_input, prev_month_str))
-    submissions = cursor.fetchall()
-    
-    cursor.execute("""
-        SELECT COUNT(*), SUM(views) FROM submissions 
-        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
-        AND submission_month = %s
-    """, (telegram_id, target_input, prev_month_str))
-    stats = cursor.fetchone()
-    conn.close()
-    
-    v_count, total_views = (stats[0] if stats and stats[0] else 0), (stats[1] if stats and stats[1] else 0)
-    rank = calculate_rank(total_views, v_count)
-    
-    report = f"📜 **تقرير إنجازات صانع المحتوى للشهر الماضي ({prev_month_str}):**\n"
-    report += f"🎮 **Game ID:** `{game_id_val}`\n"
-    report += f"🆔 **Telegram ID:** `{telegram_id}`\n"
-    report += f"👁 **إجمالي المشاهدات:** {total_views:,}\n"
-    report += f"📹 **عدد المقاطع:** {v_count}\n"
-    report += f"🎖 **الرتبة المستحقة:** {rank}\n\n"
-    
-    if submissions:
-        report += "🎬 **سجل مقاطع الشهر الماضي:**\n"
-        for idx, sub in enumerate(submissions, 1):
-            report += f"{idx}. {sub[0]}\n   👁 المشاهدات: **{sub[1]:,}**\n"
-    else:
-        report += "⚠️ لا توجد أي مقاطع مسجلة لهذا اللاعب في الشهر الماضي."
-        
-    await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
-
-@dp.message(Command("stats"))
-async def show_all_creators_detailed_stats(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=1)
-    if len(args) > 1:
-        message.text = args[1]
-        await process_specific_creator_stats(message, state)
-    else:
-        await message.answer("🔍 أرسل الآن **معرّف اللعبة (Game ID)** لصانع المحتوى المطلوب:", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        await state.set_state(Form.waiting_for_stats_game_id)
-
-@dp.message(Form.waiting_for_broadcast)
-async def process_admin_broadcast_input(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    broadcast_text = message.text.strip()
-    await state.clear()
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM users")
-    users = cursor.fetchall()
-    conn.close()
-    
-    if not users:
-        await message.answer("⚠️ لا توجد أي حسابات مسجلة في البوت حالياً.")
-        return
-        
-    sent_count, failed_count = 0, 0
-    status_msg = await message.answer(f"⏳ جاري إرسال الرسالة إلى {len(users)} صانع محتوى...")
-    for user in users:
-        try:
-            await bot.send_message(user[0], f"📢 **إشعار من الإدارة:**\n\n{broadcast_text}", parse_mode="Markdown")
-            sent_count += 1
-            await asyncio.sleep(0.1)
-        except Exception:
-            failed_count += 1
-    await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال: `{failed_count}`", parse_mode="Markdown")
-
-@dp.message(Command("send"))
-async def send_direct_message(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/send [Game_ID] [نص الرسالة]`", parse_mode="Markdown")
-        return
-    
-    target_input = args[1].strip()
-    msg_text = args[2].strip()
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
-    user_row = cursor.fetchone()
-    conn.close()
-    
-    if not user_row:
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
-        return
-        
-    telegram_id = user_row[0]
-    try:
-        await bot.send_message(telegram_id, f"📬 **رسالة خاصة من الإدارة:**\n\n{msg_text}", parse_mode="Markdown")
-        await message.answer(f"✅ تم إرسال الرسالة إلى صانع المحتوى بنجاح!", parse_mode="Markdown")
-    except Exception as e:
-        await message.answer(f"❌ فشل إرسال الرسالة:\n`{str(e)}`", parse_mode="Markdown")
-
-@dp.message(Command("remove_video"))
-async def admin_remove_video(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/remove_video [رابط_المقطع]`", parse_mode="Markdown")
-        return
-    
-    video_url = args[1].strip()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
-    sub_row = cursor.fetchone()
-    
-    cursor.execute("DELETE FROM submissions WHERE video_url = %s", (video_url,))
-    if cursor.rowcount > 0:
-        conn.commit()
-        conn.close()
-        
-        if sub_row:
-            creator_telegram_id = sub_row[0]
-            try:
-                await bot.send_message(
-                    creator_telegram_id, 
-                    f"⚠️ **تنبيه من الإدارة:**\nتم حذف مقطعك التالي لكونه غير صالح أو مخالف:\n`{video_url}`", 
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-                
-        await message.answer(f"✅ تم حذف المقطع بنجاح وإبلاغ صاحب المحتوى:\n`{video_url}`", parse_mode="Markdown")
-    else:
-        conn.close()
-        await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
-
-@dp.message(Command("broadcast"))
-async def broadcast_message(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام:\n`/broadcast [النص الذي تريد إرساله]`", parse_mode="Markdown")
-        return
-    broadcast_text = args[1].strip()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM users")
-    users = cursor.fetchall()
-    conn.close()
-    if not users:
-        await message.answer("⚠️ لا توجد أي حسابات مسجلة في البوت حالياً.")
-        return
-    sent_count, failed_count = 0, 0
-    status_msg = await message.answer(f"⏳ جاري إرسال الرسالة إلى {len(users)} صانع محتوى...")
-    for user in users:
-        try:
-            await bot.send_message(user[0], f"📢 **إشعار من الإدارة:**\n\n{broadcast_text}", parse_mode="Markdown")
-            sent_count += 1
-            await asyncio.sleep(0.1)
-        except Exception:
-            failed_count += 1
-    await status_msg.edit_text(f"✅ **تم الانتهاء من الإرسال الجماعي:**\n\n📤 تم الإرسال بنجاح: `{sent_count}`\n❌ فشل الإرسال: `{failed_count}`", parse_mode="Markdown")
-
-@dp.message(Command("remove_platform"))
-async def admin_remove_platform(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.split()
-    if len(args) < 3:
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/remove_platform [Game_ID] [اسم_المنصة]`\n\n*المنصات المدعومة: TikTok, Instagram, YouTube, Facebook*", parse_mode="Markdown")
-        return
-    
-    target_input = args[1].strip()
-    platform = args[2].strip()
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
-    user_row = cursor.fetchone()
-    
-    if not user_row:
-        conn.close()
-        await message.answer(f"❌ لم يتم العثور على صانع محتوى بمعرّف: `{target_input}`", parse_mode="Markdown")
-        return
-        
-    telegram_id = user_row[0]
-    cursor.execute("DELETE FROM creator_platforms WHERE telegram_id = %s AND platform ILIKE %s", (telegram_id, platform))
-    if cursor.rowcount > 0:
-        conn.commit()
-        conn.close()
-        try:
-            await bot.send_message(
-                telegram_id, 
-                f"⚠️ **تنبيه من الإدارة:**\nتمت إزالة اعتماد منصة **{platform}** الخاصة بك من النظام.", 
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-        await message.answer(f"✅ تم إزالة منصة **{platform}** من صانع المحتوى بنجاح وإبلاغه.", parse_mode="Markdown")
-    else:
-        conn.close()
-        actual_plats = get_user_platforms(telegram_id)
-        plats_list = ", ".join(actual_plats.keys()) if actual_plats else "لا توجد منصات مسجلة"
-        await message.answer(f"❌ لم يتم العثور على منصة **{platform}** مسجلة لهذا اللاعب.\nالمنصات المسجلة فعلياً لديه هي: ({plats_list})", parse_mode="Markdown")
-        return
-
-@dp.message(Command("set_views"))
-async def admin_set_views(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.split()
-    if len(args) < 3:
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/set_views [رابط_المقطع] [عدد_المشاهدات_الجديد]`", parse_mode="Markdown")
-        return
-    
-    video_url = None
-    new_views = None
-    for arg in args[1:]:
-        if arg.isdigit():
-            new_views = int(arg)
-        else:
-            video_url = arg
-            
-    if not video_url or new_views is None:
-        await message.answer("⚠️ طريقة الاستخدام الصحيحة:\n`/set_views [رابط_المقطع] [عدد_المشاهدات_الجديد]`", parse_mode="Markdown")
-        return
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM submissions WHERE video_url = %s", (video_url,))
-    sub_row = cursor.fetchone()
-    
-    cursor.execute("UPDATE submissions SET views = %s WHERE video_url = %s", (new_views, video_url))
-    if cursor.rowcount > 0:
-        conn.commit()
-        conn.close()
-        
-        if sub_row:
-            creator_telegram_id = sub_row[0]
-            try:
-                await bot.send_message(
-                    creator_telegram_id, 
-                    f"⚙️ **تنبيه من الإدارة:**\nتم تعديل مشاهدات مقطعك:\n`{video_url}`\nلتصبح المشاهدات الجديدة: **{new_views:,}** مشاهدة.", 
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-                
-        await message.answer(f"✅ تم تحديث مشاهدات المقطع إلى: **{new_views:,}** مشاهدة بنجاح وإبلاغ صاحب المحتوى!")
-    else:
-        conn.close()
-        await message.answer("❌ لم يتم العثور على هذا الرابط مسجلاً في النظام.")
-
-@dp.message(Command("report"))
-async def send_immediate_report(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=1)
-    target_month_str = args[1].strip() if len(args) > 1 else datetime.now().strftime("%Y-%m")
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT u.game_id, COUNT(s.id), SUM(s.views), u.telegram_id
-        FROM users u
-        LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = %s
-        GROUP BY u.telegram_id, u.game_id
-    """, (target_month_str,))
-    creators = cursor.fetchall()
-    conn.close()
-    
-    if not creators:
-        await message.answer(f"⚠️ لا توجد بيانات مسجلة لشهر {target_month_str}.")
-        return
-        
-    report_text = f"⚡ **تقرير لشهر {target_month_str}:**\n\n"
-    for idx, c in enumerate(creators, 1):
-        v_count, v_views, telegram_id = c[1] or 0, c[2] or 0, c[3]
-        rank = calculate_rank(v_views, v_count)
-        report_text += f"{idx}. 🎮 Game ID: `{c[0]}` | 🆔 Telegram ID: `{telegram_id}`\n   📹 عدد المقاطع: **{v_count}**\n   👁 إجمالي المشاهدات: **{v_views:,}**\n   🎖 الرتبة: {rank}\n\n"
-    await message.answer(report_text, parse_mode="Markdown")
-
-@dp.message(Command("allow"))
-async def allow_user(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2 or not args[1].strip().isdigit():
-        await message.answer("⚠️ طريقة الاستخدام: /allow [Telegram_ID]")
-        return
-    target_id = int(args[1].strip())
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO whitelist (telegram_id, added_at) VALUES (%s, %s)", (target_id, now))
-        conn.commit()
-        await message.answer(f"✅ تمت إضافة الحساب {target_id} بنجاح.")
-    except psycopg2.IntegrityError:
-        conn.rollback()
-        await message.answer("⚠️ الحساب مضاف مسبقاً.")
-    finally:
-        conn.close()
-
-@dp.message(Command("unallow"))
-async def unallow_user(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2 or not args[1].strip().isdigit():
-        return
-    target_id = int(args[1].strip())
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM whitelist WHERE telegram_id = %s", (target_id,))
-    conn.commit()
-    conn.close()
-    await message.answer(f"🗑 تم إزالة الحساب {target_id}.")
-
-async def show_pending_platforms_callback(message: types.Message):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT p.telegram_id, p.platform, p.requested_at, u.game_id 
-        FROM creator_platforms p
-        LEFT JOIN users u ON p.telegram_id = u.telegram_id
-        WHERE p.status = 'pending'
-        ORDER BY p.requested_at ASC
-    """)
-    pending_requests = cursor.fetchall()
-    conn.close()
-    if not pending_requests:
-        await message.answer("🎉 لا توجد أي طلبات اعتماد منصات معلقة حالياً.")
-        return
-    for req in pending_requests:
-        telegram_id, platform, requested_at, game_id = req[0], req[1], req[2], req[3] or "غير مسجل"
-        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ موافقة", callback_data=f"plat_app_{telegram_id}_{platform}"),
-                InlineKeyboardButton(text="❌ رفض", callback_data=f"plat_rej_{telegram_id}_{platform}")
-            ]
-        ])
-        text = f"🔔 **طلب منصة معلق:**\n🎮 Game ID: `{game_id}`\n🆔 Telegram ID: `{telegram_id}`\n📱 المنصة: **{platform}**\n⏱ وقت الطلب: {requested_at}"
-        await message.answer(text, reply_markup=inline_kb, parse_mode="Markdown")
-
-@dp.message(Command("pending_platforms"))
-async def show_pending_platforms(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
-        return
-    await state.clear()
-    await show_pending_platforms_callback(message)
-
-@dp.message(Command("last_month_user"))
-async def search_last_month_user_stats(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("⚠️ طريقة الاستخدام:\n`/last_month_user [Game_ID أو Telegram_ID]`", parse_mode="Markdown")
-        return
-        
-    target_input = args[1].strip()
-    now = datetime.now()
-    first_day_of_current_month = now.replace(day=1)
-    last_day_of_prev_month = first_day_of_current_month - timedelta(days=1)
-    prev_month_str = last_day_of_prev_month.strftime("%Y-%m")
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT telegram_id, game_id FROM users 
-        WHERE TRIM(game_id) ILIKE TRIM(%s) OR telegram_id::text = TRIM(%s)
-        LIMIT 1
-    """, (target_input, target_input))
-    user_info = cursor.fetchone()
-    
-    telegram_id = None
-    game_id_val = "غير مسجل"
-    
-    if user_info:
-        telegram_id = user_info[0]
-        game_id_val = user_info[1] or "غير مسجل"
-    else:
-        if target_input.isdigit():
-            telegram_id = int(target_input)
-            
-    if not telegram_id:
-        conn.close()
-        await message.answer(f"❌ لم يتم العثور على أي بيانات مسجلة بمعرّف: `{target_input}`", parse_mode="Markdown")
-        return
-    
-    cursor.execute("""
-        SELECT video_url, views, created_at FROM submissions 
-        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
-        AND submission_month = %s 
-        ORDER BY id ASC
-    """, (telegram_id, target_input, prev_month_str))
-    submissions = cursor.fetchall()
-    
-    cursor.execute("""
-        SELECT COUNT(*), SUM(views) FROM submissions 
-        WHERE (telegram_id = %s OR telegram_id::text = TRIM(%s)) 
-        AND submission_month = %s
-    """, (telegram_id, target_input, prev_month_str))
-    stats = cursor.fetchone()
-    conn.close()
-    
-    v_count, total_views = (stats[0] if stats and stats[0] else 0), (stats[1] if stats and stats[1] else 0)
-    rank = calculate_rank(total_views, v_count)
-    
-    report = f"📜 **تقرير إنجازات صانع المحتوى للشهر الماضي ({prev_month_str}):**\n"
-    report += f"🎮 **Game ID:** `{game_id_val}`\n"
-    report += f"🆔 **Telegram ID:** `{telegram_id}`\n"
-    report += f"👁 **إجمالي المشاهدات:** {total_views:,}\n"
-    report += f"📹 **عدد المقاطع:** {v_count}\n"
-    report += f"🎖 **الرتبة المستحقة:** {rank}\n\n"
-    
-    if submissions:
-        report += "🎬 **سجل مقاطع الشهر الماضي:**\n"
-        for idx, sub in enumerate(submissions, 1):
-            report += f"{idx}. {sub[0]}\n   👁 المشاهدات: **{sub[1]:,}**\n"
-    else:
-        report += "⚠️ لا توجد أي مقاطع مسجلة لهذا اللاعب في الشهر الماضي."
-        
-    await message.answer(report, disable_web_page_preview=True, parse_mode="Markdown")
-
-@dp.message(Command("admin_stats"))
-async def admin_stats_handler(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    current_month = datetime.now().strftime("%Y-%m")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT u.game_id, COUNT(s.id), SUM(s.views), u.telegram_id FROM users u LEFT JOIN submissions s ON u.telegram_id = s.telegram_id AND s.submission_month = %s GROUP BY u.telegram_id, u.game_id", (current_month,))
-    creators = cursor.fetchall()
-    conn.close()
-    if not creators:
-        await message.answer(f"لا توجد بيانات لشهر {current_month}.")
-        return
-    text = f"📊 إحصائيات صناع المحتوى لشهر {current_month}:\n\n"
-    for idx, c in enumerate(creators, 1):
-        v_count, v_views, t_id = c[1] or 0, c[2] or 0, c[3]
-        text += f"{idx}. Game ID: {c[0]} | Telegram ID: `{t_id}` | الفيديوهات: {v_count} | المشاهدات: {v_views:,} | الرتبة: {calculate_rank(v_views, v_count)}\n"
-    await message.answer(text, parse_mode="Markdown")
-
-@dp.message(Command("admin_summary"))
-async def admin_summary_handler(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    current_month = datetime.now().strftime("%Y-%m")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT SUM(views), COUNT(id) FROM submissions WHERE submission_month = %s", (current_month,))
-    total_stats = cursor.fetchone()
-    total_views, total_videos = total_stats[0] or 0, total_stats[1] or 0
-    cursor.execute("SELECT u.game_id, SUM(s.views) as total_v, COUNT(s.id) as v_count FROM users u JOIN submissions s ON u.telegram_id = s.telegram_id WHERE s.submission_month = %s GROUP BY u.telegram_id, u.game_id ORDER BY total_v DESC LIMIT 10", (current_month,))
-    top_creators = cursor.fetchall()
-    conn.close()
-    summary_text = f"📈 الملخص العام لشهر {current_month}:\nإجمالي المشاهدات: {total_views:,}\nإجمالي الفيديوهات: {total_videos}\n\n🏆 أفضل صناع المحتوى:\n"
-    if not top_creators:
-        summary_text += "لا توجد مشاهدات مسجلة."
-    else:
-        for idx, creator in enumerate(top_creators, 1):
-            summary_text += f"{idx}. Game ID: {creator[0]} - المشاهدات: {creator[1]:,}\n"
-    await message.answer(summary_text)
-
-@dp.message(Command("myid"))
-async def get_group_id(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer(f"معرّف المحادثة (Chat ID): {message.chat.id}\nمعرّف حسابك (Telegram ID): {message.from_user.id}")
-
-@dp.message(F.text.contains("طلب إضافة منصة"))
-async def request_platform_start(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    await state.clear()
-    await message.answer("اختر المنصة التي تريد طلب اعتمادها لنشر المقاطع:", reply_markup=platforms_keyboard)
-    await state.set_state(Form.waiting_for_platform_choice)
-
-@dp.message(Form.waiting_for_platform_choice)
-async def process_platform_choice(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    platform = message.text.strip()
-    if platform not in ["TikTok", "Instagram", "YouTube", "Facebook"]:
-        await message.answer("الرجاء اختيار منصة صحيحة من القائمة:", reply_markup=platforms_keyboard)
-        return
-    
-    telegram_id = message.from_user.id
-    user_plats = get_user_platforms(telegram_id)
-    if user_plats.get(platform) == "pending":
-        await state.clear()
-        await message.answer(f"⚠️ لديك بالفعل طلب معلق لاعتماد منصة **{platform}**. يرجى انتظار رد الإدارة.", reply_markup=main_keyboard, parse_mode="Markdown")
-        return
-    elif user_plats.get(platform) == "approved":
-        await state.clear()
-        await message.answer(f"✅ منصة **{platform}** معتمدة لديك مسبقاً ولا تحتاج لطلب جديد.", reply_markup=main_keyboard, parse_mode="Markdown")
-        return
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO creator_platforms (telegram_id, platform, status, requested_at) VALUES (%s, %s, 'pending', %s)", (telegram_id, platform, now))
-        conn.commit()
-    except psycopg2.IntegrityError:
-        conn.rollback()
-        cursor.execute("UPDATE creator_platforms SET status = 'pending', requested_at = %s WHERE telegram_id = %s AND platform = %s", (now, telegram_id, platform))
-        conn.commit()
-    finally:
-        conn.close()
-    
-    await state.clear()
-    await message.answer(f"✅ تم إرسال طلب اعتماد منصة **{platform}** إلى الإدارة بنجاح.", reply_markup=main_keyboard, parse_mode="Markdown")
-    
-    if ADMIN_GROUP_ID != 0:
-        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ موافقة", callback_data=f"plat_app_{telegram_id}_{platform}"),
-                InlineKeyboardButton(text="❌ رفض", callback_data=f"plat_rej_{telegram_id}_{platform}")
-            ]
-        ])
-        await bot.send_message(ADMIN_GROUP_ID, f"🔔 **طلب اعتماد منصة جديد:**\n👤 صانع المحتوى: `{telegram_id}`\n📱 المنصة: **{platform}**", reply_markup=inline_kb, parse_mode="Markdown")
-
-@dp.callback_query(F.data.startswith("plat_"))
-async def handle_platform_approval(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("ليس لديك صلاحية.", show_alert=True)
-        return
-    data_parts = callback.data.split("_")
-    action, telegram_id, platform = data_parts[1], int(data_parts[2]), data_parts[3]
-    new_status = "approved" if action == "app" else "rejected"
-    status_text = "معتمدة ✅" if action == "app" else "مرفوضة ❌"
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE creator_platforms SET status = %s WHERE telegram_id = %s AND platform = %s", (new_status, telegram_id, platform))
-    conn.commit()
-    conn.close()
-    
-    try:
-        await callback.message.edit_text(callback.message.text + f"\n\n**الحالة الناتجة:** تم تغيير الحالة إلى ({status_text}).", parse_mode="Markdown")
-    except Exception:
-        pass
-    await callback.answer(f"تم تحديث الحالة إلى {status_text}")
-    try:
-        if action == "app":
-            await bot.send_message(telegram_id, f"🎉 مبروك! تمت الموافقة على منصة **{platform}**.", parse_mode="Markdown")
-        else:
-            await bot.send_message(telegram_id, f"⚠️ عذراً، تم رفض منصة **{platform}**.", parse_mode="Markdown")
-    except Exception:
-        pass
-
-@dp.message(F.text.contains("مقاطعي هذا الشهر"))
-async def show_my_submissions(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    await state.clear()
-    telegram_id = message.from_user.id
-    current_month = datetime.now().strftime("%Y-%m")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT video_url, views, created_at FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
-    rows = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
-    stats = cursor.fetchone()
-    conn.close()
-    v_count, total_views = stats[0] or 0, stats[1] or 0
-    if not rows:
-        await message.answer(f"لم تقم بإرسال أي مقاطع لشهر {current_month}.", reply_markup=main_keyboard)
-        return
-    res = f"🎬 مقاطعك المسجلة لشهر {current_month}:\n\n"
-    for idx, row in enumerate(rows, 1):
-        res += f"{idx}. {row[0]}\nالمشاهدات: {row[1]:,} | {row[2]}\n\n"
-    res += f"إجمالي المشاهدات: {total_views:,}\nعدد الفيديوهات: {v_count}\nرتبتك الحالية: {calculate_rank(total_views, v_count)}"
-    await message.answer(res, disable_web_page_preview=True, reply_markup=main_keyboard)
-
-@dp.message(F.text.contains("حسابي المعرّف"))
-async def show_my_account(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    await state.clear()
-    telegram_id = message.from_user.id
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
-    user = cursor.fetchone()
-    conn.close()
-    if user:
-        await message.answer(f"معرّف اللعبة المسجل بحسابك هو: {user[0]}", reply_markup=main_keyboard)
-    else:
-        await message.answer("غير مسجل لدينا، يرجى إرسال /start للتسجيل.", reply_markup=main_keyboard)
-
-@dp.message(F.text.contains("تعديل المعرّف"))
-async def start_update_game_id(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    await state.clear()
-    telegram_id = message.from_user.id
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
-    user = cursor.fetchone()
-    conn.close()
-    if not user:
-        await message.answer("⚠️ أنت غير مسجل مسبقاً! أرسل /start لتسجيل معرفك.", reply_markup=main_keyboard)
-        return
-    await message.answer(f"معرّفك الحالي: `{user[0]}`\n\nأرسل **معرّف اللعبة الجديد** (أرقام فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
-    await state.set_state(Form.waiting_for_update_game_id)
-
-@dp.message(Form.waiting_for_update_game_id)
-async def process_update_game_id(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    new_game_id = message.text.strip()
-    if not new_game_id.isdigit():
-        await message.answer("❌ أرسل معرّف صحيح من أرقام فقط:", reply_markup=cancel_keyboard)
-        return
-    telegram_id = message.from_user.id
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE users SET game_id = %s WHERE telegram_id = %s", (new_game_id, telegram_id))
-        conn.commit()
-        await state.clear()
-        await message.answer(f"✅ تم تحديث المعرّف إلى: `{new_game_id}` بنجاح مع الاحتفاظ بكافة مقاطعك!", reply_markup=main_keyboard, parse_mode="Markdown")
-    except psycopg2.IntegrityError:
-        conn.rollback()
-        await message.answer("❌ عذراً، هذا المعرّف مستخدم مسبقاً!", reply_markup=main_keyboard, parse_mode="Markdown")
-        await state.clear()
-    finally:
-        conn.close()
-
-@dp.message(F.text.contains("تعديل مشاهدات مقطع"))
-async def start_creator_update_views(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-        
-    await state.clear()
-
-    telegram_id = message.from_user.id
-    current_month = datetime.now().strftime("%Y-%m")
-    
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT video_url FROM submissions WHERE telegram_id = %s AND submission_month = %s ORDER BY id ASC", (telegram_id, current_month))
-        rows = cursor.fetchall()
-        conn.close()
-        
-        if not rows:
-            await message.answer("⚠️ ليس لديك أي مقاطع مسجلة لهذا الشهر لتعديل مشاهداتها.", reply_markup=main_keyboard)
-            return
-            
-        text = "اختر المقطع الذي تريد تحديث مشاهداته بإرسال رقمه:\n\n"
-        for idx, row in enumerate(rows, 1):
-            text += f"{idx}. {row[0]}\n"
-        
-        await state.update_data(user_videos=[r[0] for r in rows])
-        await message.answer(text, reply_markup=cancel_keyboard)
-        await state.set_state(Form.waiting_for_new_views)
-    except Exception as e:
-        logging.error(f"Error in start_creator_update_views: {traceback.format_exc()}")
-        await message.answer(f"حدث خطأ تقني:\n{str(e)}", reply_markup=main_keyboard)
-
-@dp.message(Form.waiting_for_new_views)
-async def process_creator_new_views(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-
-    text = message.text.strip()
-    data = await state.get_data()
-    user_videos = data.get("user_videos", [])
-    
-    if "selected_video" not in data:
-        if not text.isdigit() or int(text) < 1 or int(text) > len(user_videos):
-            await message.answer("❌ رقم غير صحيح. اختر رقماً صحيحاً من القائمة:", reply_markup=cancel_keyboard)
-            return
-        selected_url = user_videos[int(text) - 1]
-        await state.update_data(selected_video=selected_url)
-        await message.answer(f"📊 الرابط المختار:\n`{selected_url}`\n\nالآن أرسل **عدد المشاهدات الجديد** (أرقام صحيحة فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
-        return
-        
-    if not text.isdigit():
-        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
-        return
-        
-    new_views = int(text)
-    selected_url = data.get("selected_video")
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE submissions SET views = %s WHERE video_url = %s", (new_views, selected_url))
-    conn.commit()
-    conn.close()
-    
-    await state.clear()
-    await message.answer(f"✅ تم تحديث مشاهدات المقطع بنجاح إلى: **{new_views:,}** مشاهدة!", reply_markup=main_keyboard, parse_mode="Markdown")
-
-@dp.message(Form.waiting_for_game_id)
-async def process_game_id(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    telegram_id = message.from_user.id
-    game_id = message.text.strip()
-    if not game_id.isdigit():
-        await message.answer("يرجى إرسال أرقام فقط:", reply_markup=cancel_keyboard)
-        return
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO users (telegram_id, game_id, registered_at) VALUES (%s, %s, %s)", (telegram_id, game_id, now))
-        conn.commit()
-        await state.clear()
-        await message.answer(f"تم ربط حسابك بمعرّف اللعبة: {game_id} بنجاح!", reply_markup=main_keyboard)
-    except psycopg2.IntegrityError:
-        conn.rollback()
-        cursor.execute("SELECT telegram_id FROM users WHERE game_id = %s", (game_id,))
-        owner = cursor.fetchone()
-        if owner and owner[0] == telegram_id:
-            await state.clear()
-            await message.answer(f"أنت مسجل مسبقاً بهذا المعرّف: {game_id}", reply_markup=main_keyboard)
-        else:
-            await message.answer("عذراً، المعرّف مسجل بحساب آخر.", reply_markup=main_keyboard)
-            await state.clear()
-    finally:
-        conn.close()
-
 URL_PATTERNS = {
     "TikTok": r"(https?://(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com)/\S+)",
     "YouTube": r"(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/\S+)",
@@ -1403,110 +111,132 @@ URL_PATTERNS = {
     "Facebook": r"(https?://(?:www\.)?(?:facebook\.com|fb\.watch)/\S+)"
 }
 
-@dp.message(F.text.contains("إرسال مقطع جديد"))
-async def start_submission(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-    
-    await state.clear()
+@bot.event
+async def on_ready():
+    logging.info(f"تم تسجيل الدخول بنجاح باسم: {bot.user.name}")
+    try:
+        synced = await bot.tree.sync()
+        logging.info(f"تم مزامنة {len(synced)} من الأوامر بنجاح.")
+    except Exception as e:
+        logging.error(f"خطأ في مزامنة الأوامر: {e}")
 
-    telegram_id = message.from_user.id
+# --- الأوامر المائلة (Slash Commands) لصناع المحتوى ---
+
+@bot.tree.command(name="register", description="تسجيل وربط حسابك بمعرف اللعبة Game ID")
+async def register(interaction: discord.Interaction, game_id: str):
+    if not game_id.isdigit():
+        await interaction.response.send_message("❌ يرجى إدخال أرقام صحيحة فقط لمعرف اللعبة.", ephemeral=True)
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT game_id FROM users WHERE telegram_id = %s", (telegram_id,))
+    try:
+        cursor.execute("INSERT INTO users (discord_id, game_id, registered_at) VALUES (%s, %s, %s)", (interaction.user.id, game_id, now))
+        conn.commit()
+        await interaction.response.send_message(f"✅ تم ربط حسابك بمعرف اللعبة `{game_id}` بنجاح!", ephemeral=True)
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        cursor.execute("UPDATE users SET game_id = %s WHERE discord_id = %s", (game_id, interaction.user.id))
+        conn.commit()
+        await interaction.response.send_message(f"✅ تم تحديث معرف اللعبة الخاص بك إلى `{game_id}` بنجاح!", ephemeral=True)
+    finally:
+        conn.close()
+
+@bot.tree.command(name="submit", description="إرسال مقطع جديد مع عدد المشاهدات")
+@app_commands.describe(video_url="رابط المقطع (تيك توك، يوتيوب، إلخ)", views="عدد المشاهدات الحالية")
+async def submit(interaction: discord.Interaction, video_url: str, views: int):
+    discord_id = interaction.user.id
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT game_id FROM users WHERE discord_id = %s", (discord_id,))
     user = cursor.fetchone()
-    conn.close()
+    
     if not user:
-        await message.answer("أنت غير مسجل! أرسل /start أولاً.", reply_markup=main_keyboard)
-        return
-    
-    await message.answer("يرجى إرسال رابط المقطع الآن (YouTube / TikTok / Instagram / Facebook):", reply_markup=cancel_keyboard)
-    await state.set_state(Form.waiting_for_video_url)
-
-@dp.message(Form.waiting_for_video_url)
-async def process_video_url(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
+        conn.close()
+        await interaction.response.send_message("⚠️ أنت غير مسجل في النظام! استخدم الأمر `/register` أولاً.", ephemeral=True)
         return
 
-    text = message.text.strip()
-    
     matched_platform, clean_url = None, None
     for plat, pattern in URL_PATTERNS.items():
-        match = re.search(pattern, text)
+        match = re.search(pattern, video_url)
         if match:
             matched_platform = plat
             clean_url = match.group(0)
             break
-            
+
     if not matched_platform:
-        await message.answer("الرابط غير صالح أو غير مدعوم! أرسل رابطاً صحيحاً:", reply_markup=cancel_keyboard)
-        return
-        
-    telegram_id = message.from_user.id
-    user_plats = get_user_platforms(telegram_id)
-    
-    if user_plats.get(matched_platform) != "approved":
-        await message.answer(f"⛔ عذراً، منصة **{matched_platform}** غير معتمدة لحسابك. قدم طلباً لاعتمادها من القائمة الرئيسية.", reply_markup=main_keyboard, parse_mode="Markdown")
-        await state.clear()
+        conn.close()
+        await interaction.response.send_message("❌ الرابط غير صالح أو المنصة غير مدعومة!", ephemeral=True)
         return
 
-    await state.update_data(pending_url=clean_url, matched_platform=matched_platform)
-    await message.answer("📊 ممتاز! الآن أرسل **عدد المشاهدات** الحالي لهذا المقطع (أرقام صحيحة فقط):", reply_markup=cancel_keyboard, parse_mode="Markdown")
-    await state.set_state(Form.waiting_for_manual_views)
-
-@dp.message(Form.waiting_for_manual_views)
-async def process_manual_views(message: types.Message, state: FSMContext):
-    if not is_allowed(message.from_user.id):
-        return
-
-    text = message.text.strip()
-    if not text.isdigit():
-        await message.answer("❌ يرجى إرسال أرقام صحيحة فقط لعدد المشاهدات:", reply_markup=cancel_keyboard)
-        return
-        
-    views = int(text)
-    data = await state.get_data()
-    clean_url = data.get("pending_url")
-    matched_platform = data.get("matched_platform")
-    telegram_id = message.from_user.id
-    
     current_month = datetime.now().strftime("%Y-%m")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
+
     try:
-        cursor.execute("INSERT INTO submissions (telegram_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (telegram_id, clean_url, views, current_month, now))
+        cursor.execute("INSERT INTO submissions (discord_id, video_url, views, submission_month, created_at) VALUES (%s, %s, %s, %s, %s)", (discord_id, clean_url, views, current_month, now))
         conn.commit()
-        
-        cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE telegram_id = %s AND submission_month = %s", (telegram_id, current_month))
+
+        cursor.execute("SELECT COUNT(*), SUM(views) FROM submissions WHERE discord_id = %s AND submission_month = %s", (discord_id, current_month))
         stats = cursor.fetchone()
         v_count, total_views = stats[0] or 1, stats[1] or views
         
-        current_rank = calculate_rank(total_views, v_count)
-        next_rank_msg = get_next_rank_progress(total_views, v_count)
-        
-        await message.answer(
-            f"✅ **تم تسجيل المقطع والمشاهدات بنجاح!**\n"
-            f"📹 المنصة: {matched_platform}\n"
-            f"👁 المشاهدات المسجلة: {views:,}\n"
-            f"📊 إجمالي مقاطعك هذا الشهر: {v_count} | إجمالي المشاهدات: {total_views:,}\n\n"
-            f"🎖 رتبتك الحالية: {current_rank}\n"
-            f"{next_rank_msg}",
-            reply_markup=main_keyboard,
-            parse_mode="Markdown"
-        )
-        await state.clear()
+        rank = calculate_rank(total_views, v_count)
+
+        embed = discord.Embed(title="🎬 تم تسجيل المقطع بنجاح", color=discord.Color.green())
+        embed.add_field(name="المنصة", value=matched_platform, inline=True)
+        embed.add_field(name="المشاهدات", value=f"{views:,}", inline=True)
+        embed.add_field(name="إجمالي مقاطعك هذا الشهر", value=str(v_count), inline=True)
+        embed.add_field(name="إجمالي المشاهدات", value=f"{total_views:,}", inline=True)
+        embed.add_field(name="الرتبة الحالية", value=rank, inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     except psycopg2.IntegrityError:
         conn.rollback()
-        await message.answer("❌ هذا الرابط مسجل مسبقاً في النظام!", reply_markup=main_keyboard)
-        await state.clear()
+        await interaction.response.send_message("❌ هذا الرابط مسجل مسبقاً في النظام!", ephemeral=True)
     finally:
         conn.close()
 
-async def main():
-    asyncio.create_task(report_scheduler())
-    await dp.start_polling(bot)
+@bot.tree.command(name="my_stats", description="عرض إحصائياتك ومقاطعك المسجلة لهذا الشهر")
+async def my_stats(interaction: discord.Interaction):
+    discord_id = interaction.user.id
+    current_month = datetime.now().strftime("%Y-%m")
 
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT game_id FROM users WHERE discord_id = %s", (discord_id,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        await interaction.response.send_message("⚠️ لم تقم بالتسجيل بعد. استخدم الأمر `/register`.", ephemeral=True)
+        return
+
+    cursor.execute("SELECT video_url, views FROM submissions WHERE discord_id = %s AND submission_month = %s ORDER BY id ASC", (discord_id, current_month))
+    rows = cursor.fetchall()
+    conn.close()
+
+    total_views = sum(r[1] for r in rows)
+    v_count = len(rows)
+    rank = calculate_rank(total_views, v_count)
+
+    embed = discord.Embed(title=f"📊 إحصائياتك لشهر {current_month}", color=discord.Color.blue())
+    embed.add_field(name="Game ID", value=user[0], inline=True)
+    embed.add_field(name="المقاطع المسجلة", value=str(v_count), inline=True)
+    embed.add_field(name="إجمالي المشاهدات", value=f"{total_views:,}", inline=True)
+    embed.add_field(name="الرتبة", value=rank, inline=False)
+
+    if rows:
+        desc = ""
+        for idx, r in enumerate(rows, 1):
+            desc += f"**{idx}.** [رابط المقطع]({r[0]}) — 👁️ **{r[1]:,}**\n"
+        embed.description = desc
+    else:
+        embed.description = "لا توجد مقاطع مسجلة هذا الشهر حتى الآن."
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# --- تشغيل البوت ---
 if __name__ == "__main__":
-    asyncio.run(main())
+    bot.run(DISCORD_TOKEN)
