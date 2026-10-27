@@ -113,6 +113,7 @@ class Form(StatesGroup):
     waiting_for_allow_id = State()
     waiting_for_remove_platform_input = State()
     waiting_for_last_month_input = State()
+    waiting_for_admin_set_game_id = State()
 
 def calculate_rank(views, videos_count):
     if views >= 2000000 and videos_count >= 60:
@@ -236,7 +237,8 @@ async def admin_panel_handler(message: types.Message, state: FSMContext):
             InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="adm_broadcast")
         ],
         [
-            InlineKeyboardButton(text="✉️ إرسال رسالة خاصة", callback_data="adm_send")
+            InlineKeyboardButton(text="✉️ إرسال رسالة خاصة", callback_data="adm_send"),
+            InlineKeyboardButton(text="✏️ تعديل معرف لاعب", callback_data="adm_setgameid")
         ],
         [
             InlineKeyboardButton(text="⚙️ تعديل مشاهدات", callback_data="adm_setviews"),
@@ -337,6 +339,14 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         await callback.answer()
         await callback.message.answer("✉️ أرسل الرسالة بالشكل التالي:\n`[Game_ID] [نص الرسالة]`", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_send_msg_input)
+    elif action == "setgameid":
+        await callback.answer()
+        await callback.message.answer(
+            "✏️ أرسل البيانات بالشكل التالي لتعديل المعرف:\n`[Telegram_ID] [Game_ID_الجديد]`\n*(مثال: `728021050 3070641605`)*", 
+            reply_markup=cancel_keyboard, 
+            parse_mode="Markdown"
+        )
+        await state.set_state(Form.waiting_for_admin_set_game_id)
     elif action == "delvideo":
         await callback.answer()
         await callback.message.answer("🗑 أرسل **رابط المقطع** الذي تريد حذفه:", reply_markup=cancel_keyboard, parse_mode="Markdown")
@@ -362,7 +372,6 @@ async def handle_admin_panel_callback(callback: types.CallbackQuery, state: FSMC
         await callback.message.answer("📜 أرسل **Game ID** أو **Telegram ID** للاستعلام عن تقرير الشهر الماضي:", reply_markup=cancel_keyboard, parse_mode="Markdown")
         await state.set_state(Form.waiting_for_last_month_input)
 
-# --- معالجة الإلغاء الشاملة والآمنة لجميع الحالات ---
 @dp.message(F.text.in_({"إلغاء", "كنسل"}))
 @dp.message(Command("cancel", "cancle", "reset", "fix"))
 async def global_cancel_handler(message: types.Message, state: FSMContext):
@@ -389,6 +398,58 @@ async def start_command_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("أهلاً بك! يرجى إرسال معرّف اللاعب (Game ID) الخاص بك للبدء:", reply_markup=cancel_keyboard)
         await state.set_state(Form.waiting_for_game_id)
+
+@dp.message(Form.waiting_for_admin_set_game_id)
+async def process_admin_set_game_id(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    
+    args = message.text.strip().split()
+    if len(args) < 2:
+        await message.answer("⚠️ الخطأ في الصيغة. يرسل هكذا:\n`[Telegram_ID] [Game_ID_الجديد]`", parse_mode="Markdown")
+        return
+        
+    target_t_id_str = args[0].strip()
+    new_game_id = args[1].strip()
+    
+    if not target_t_id_str.isdigit() or not new_game_id.isdigit():
+        await message.answer("❌ يرجى التأكد من أن Telegram ID ومعرف اللعبة الجديد يتكونان من أرقام صحيحة.")
+        return
+        
+    target_telegram_id = int(target_t_id_str)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE users SET game_id = %s WHERE telegram_id = %s", (new_game_id, target_telegram_id))
+        if cursor.rowcount > 0:
+            conn.commit()
+            await state.clear()
+            await message.answer(f"✅ تم تحديث معرف اللعبة لصانع المحتوى (Telegram ID: `{target_telegram_id}`) ليصبح المعرف الجديد: `{new_game_id}` بنجاح مع الاحتفاظ بكافة مقاطعه!", parse_mode="Markdown", reply_markup=main_keyboard)
+            try:
+                await bot.send_message(target_telegram_id, f"⚙️ **تنبيه من الإدارة:**\nتم تعديل معرف اللعبة الخاص بك في النظام ليصبح: `{new_game_id}`", parse_mode="Markdown")
+            except Exception:
+                pass
+        else:
+            await message.answer(f"❌ لم يتم العثور على مستخدم مسجل بهذا الـ Telegram ID: `{target_telegram_id}`", parse_mode="Markdown")
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        await message.answer("❌ عذراً، معرف اللعبة الجديد مستخدم مسبقاً من قبل صانع محتوى آخر.")
+    finally:
+        conn.close()
+
+@dp.message(Command("set_game_id"))
+async def admin_set_game_id_command(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ عذراً، هذا الأمر مخصص للمشرفين فقط.")
+        return
+    await state.clear()
+    await message.answer(
+        "⚙️ لتعديل معرف اللعبة لصانع المحتوى، أرسل البيانات بالشكل التالي:\n\n`[Telegram_ID] [Game_ID_الجديد]`\n*(مثال: `728021050 3070641605`)*",
+        reply_markup=cancel_keyboard,
+        parse_mode="Markdown"
+    )
+    await state.set_state(Form.waiting_for_admin_set_game_id)
 
 @dp.message(Form.waiting_for_stats_game_id)
 async def receive_stats_game_id(message: types.Message, state: FSMContext):
